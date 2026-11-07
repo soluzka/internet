@@ -5,14 +5,22 @@ snapshot (data/video_index.db) and a JSON copy used by the static site
 (public/data/videos.json). Run this after scraping so all three agree:
 
     .venv\\Scripts\\python tools\\export_index.py
+
+The static site has no Python behind it, so the genre model cannot run there.
+Genres are therefore inferred here, once, and shipped inside the JSON next to
+ each video.
 """
 
 import json
 import os
 import sqlite3
+import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+from genre_model import MusicGenreModel  # noqa: E402
 LIVE_DB = os.path.join(ROOT, "..", "video_index.db")
 SNAPSHOT_DB = os.path.join(ROOT, "data", "video_index.db")
 STATIC_JSON = os.path.join(ROOT, "public", "data", "videos.json")
@@ -39,6 +47,25 @@ def main():
          "du": duration or "", "s": source or "", "c": clicks or 0, "tg": tags or ""}
         for (url, title, description, thumbnail, duration, source, clicks, tags) in rows
     ]
+
+    # Infer every genre here: this is the only place the model can run for a
+    # static deployment, since the browser has no Python to ask.
+    started = time.time()
+    model = MusicGenreModel([f'{v["t"]} {v["d"]} {v["tg"]}'.lower() for v in videos])
+    labelled = 0
+    for video in videos:
+        guess = model.infer(video["t"], video["d"], video["tg"])
+        if not guess:
+            continue
+        labelled += 1
+        video["g"] = {
+            "n": guess["genre"],
+            "c": guess["confidence"],
+            # Short keys: this repeats thousands of times in the file.
+            "e": [[item["question"], item["answer"]] for item in guess["evidence"]],
+            "a": guess["alternatives"][0]["genre"] if guess["alternatives"] else None,
+        }
+    print("genres %d/%d in %.1fs" % (labelled, len(videos), time.time() - started))
     searches = snapshot.execute("SELECT COUNT(*) FROM search_history").fetchone()[0]
     clicks = snapshot.execute("SELECT SUM(click_count) FROM videos").fetchone()[0] or 0
     snapshot.close()

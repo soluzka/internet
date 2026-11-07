@@ -703,13 +703,26 @@
                     duration: item.video.du,
                     source: item.video.s,
                     score: best ? Math.min(item.score / best, 1) : 0,
+                    genre: bundledGenre(item.video.g),
                 })),
+            };
+        }
+
+        // Genres are inferred when the index is exported and stored in the JSON
+        // with short keys, because the static site has no Python to ask.
+        function bundledGenre(g) {
+            if (!g || !g.n) return null;
+            return {
+                genre: g.n,
+                confidence: g.c || 0,
+                evidence: (g.e || []).map(pair => ({ question: pair[0], answer: pair[1] })),
+                alternatives: g.a ? [{ genre: g.a }] : [],
             };
         }
 
         try {
             // Reconnect a few times: a server restart used to leave the page
-            // stranded in bundled-index mode for as long as the tab stayed open.
+            // stranded in bundled-index mode for as long as the tab was open.
             setConnection('connecting');
             socket = io({
                 timeout: 10000,
