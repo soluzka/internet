@@ -691,12 +691,12 @@
 
                 loadIndex()
                 .then(() => {
-                    const found = localSearch(query, 40);
+                    const found = localSearch(query, 500);
                     const results = found.results;
                     searchBtn.disabled = false;
                     searchBtn.textContent = 'Search';
-                    const shownNote = results.length < found.total ? ` &middot; showing top ${results.length}` : '';
-                    aiStatus.innerHTML = `<div>Found ${found.total} results${shownNote}</div>`;
+                    const shownNote = results.length < found.total ? ` &middot; showing ${results.length}` : '';
+                    aiStatus.innerHTML = `<div>Found ${found.total} ${found.total === 1 ? 'match' : 'matches'}${shownNote}</div>`;
                     updateStats(indexStats);
 
                     // Remove empty state and show results
