@@ -532,7 +532,7 @@
                 <div class="player-title" id="playerTitle"></div>
                 <div class="player-desc" id="playerDesc"></div>
                 <a class="player-open" id="playerOpen" href="#" target="_blank" rel="noopener noreferrer"
-                   onclick="return openExternal(this.href, event)">
+                   onclick="event.stopPropagation()">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>
                     <span id="playerOpenText">Open on the source site</span>
                 </a>
@@ -882,7 +882,7 @@
                     ${scoreHtml}
                     <div class="footer-actions">
                         <a class="open-link" href="${escapeAttr(result.url)}" target="_blank" rel="noopener noreferrer"
-                           onclick="event.stopPropagation(); return openExternal(this.href, event)" title="Open this video on the original site">
+                           onclick="event.stopPropagation()" title="Open this video on the original site">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>
                             Open
                         </a>
@@ -908,16 +908,17 @@
             return card;
         }
 
-        // Opening the source site: window.open is swallowed in the packaged
-        // desktop shell, so fall back to navigating this tab.
-        function openExternal(url, event) {
-            if (event) event.preventDefault();
-            try {
-                const opened = window.open(url, '_blank', 'noopener');
-                if (opened) return false;
-            } catch (err) {}
-            window.location.href = url;
-            return false;
+        // Open a source site the same way a normal link does. window.open is
+        // unreliable here: some shells hand back a handle and then drop the
+        // window, which looks like the link doing nothing.
+        function openSource(url) {
+            const link = document.createElement('a');
+            link.href = url;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
         }
 
         // --- Video Player ---
@@ -938,7 +939,10 @@
                 const vid = url.match(/vimeo\.com\/(\d+)/);
                 if (vid) embed = `<iframe width="100%" height="100%" src="https://player.vimeo.com/video/${vid[1]}" frameborder="0" allowfullscreen></iframe>`;
             } else {
-                embed = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#888">No inline player for this source — use the button below.</div>`;
+                // Nothing we can embed: send the user to the source page rather
+                // than showing an empty player they cannot use.
+                openSource(url);
+                return;
             }
 
             // Always offer a way out: embeds get blocked by X-Frame-Options,
@@ -958,12 +962,20 @@
             titleEl.textContent = title;
             descEl.textContent = desc;
             overlay.classList.add('active');
+            playerOpenedAt = Date.now();
         }
+
+        // A click that opens the overlay can also land on it as the backdrop
+        // handler runs, which made the player flash open and shut. Ignore
+        // backdrop clicks for a moment after opening; × and Escape still close.
+        let playerOpenedAt = 0;
 
         function closePlayer(e) {
             if (e && e.target.closest('.player-content')) return;
+            if (e && Date.now() - playerOpenedAt < 400) return;
             document.getElementById('playerOverlay').classList.remove('active');
             document.getElementById('playerVideo').innerHTML = '';
+            playerOpenedAt = 0;
         }
 
         // Escape closes the player too: an embed that refuses to load can
