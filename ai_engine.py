@@ -40,6 +40,8 @@ import numpy as np
 from flask import send_file, jsonify, request
 from flask_socketio import emit
 
+from genre_model import MusicGenreModel
+
 # Locate ffmpeg for yt-dlp merging
 try:
     import imageio_ffmpeg
@@ -138,6 +140,9 @@ class MLDatabase:
         self.documents = []
         self.svd = None
         self.svd_matrix = None
+        # Set by setup_routes once the library is loaded, so search results can
+        # carry the genre the listing argues for.
+        self.genre_model = None
         self._rebuild_index()
 
     def _init_db(self):
@@ -289,11 +294,12 @@ class MLDatabase:
         for idx in top_indices:
             vid_id = self.video_ids[idx]
             row = conn.execute(
-                """SELECT url, title, description, thumbnail, duration, source, platform, click_count
+                """SELECT url, title, description, thumbnail, duration, source, platform,
+                          click_count, tags
                    FROM videos WHERE id = ?""", (vid_id,)
             ).fetchone()
             if row:
-                results.append({
+                result = {
                     'url': row[0],
                     'title': row[1],
                     'description': row[2] or '',
@@ -304,7 +310,16 @@ class MLDatabase:
                     'type': 'video',
                     'score': max(float(sims[idx]), 0.0),
                     'click_count': row[7],
-                })
+                }
+                if self.genre_model is not None:
+                    try:
+                        genre = self.genre_model.infer(row[1], row[2], row[8])
+                    except Exception as genre_err:  # never let a guess break search
+                        logger.warning(f'Genre inference failed for {row[0]!r}: {genre_err}')
+                        genre = None
+                    if genre:
+                        result['genre'] = genre
+                results.append(result)
             if limit and len(results) >= limit:
                 break
         conn.close()
@@ -1290,6 +1305,28 @@ class DownloadManager:
 def setup_routes(app, socketio):
     """Set up Flask routes and Socket.IO event handlers for the AI search engine."""
     database = MLDatabase()
+
+    # The genre model weighs phrases by how rare they are in this library, so it
+    # has to read every document once. That fit takes seconds on a large index,
+    # so it runs in the background: results get genre labels immediately and the
+    # rarity weighting improves a moment later, without delaying startup.
+    try:
+        genre_model = MusicGenreModel()
+        database.genre_model = genre_model
+
+        def _fit_genres() -> None:
+            started = time.time()
+            try:
+                genre_model.fit(list(database.documents))
+                logger.info('Genre model fitted on %d videos in %.1fs',
+                            genre_model.n_docs, time.time() - started)
+            except Exception as fit_err:
+                logger.warning('Genre model fit failed: %s', fit_err)
+
+        threading.Thread(target=_fit_genres, daemon=True).start()
+    except Exception as genre_err:
+        logger.warning(f'Genre model unavailable: {genre_err}')
+
     scraper = VideoScraper()
     discovery_agent = DiscoveryAgent(database)
     ranking_agent = RankingAgent(database)

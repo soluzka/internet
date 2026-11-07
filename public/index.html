@@ -319,6 +319,45 @@
             -webkit-box-orient: vertical;
             overflow: hidden;
         }
+        /* Genre guess under the card, with the evidence behind it */
+        .genre-line {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+        .genre-chip {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--accent2);
+            background: rgba(0, 206, 201, 0.10);
+            border: 1px solid rgba(0, 206, 201, 0.35);
+            padding: 3px 9px;
+            border-radius: 999px;
+        }
+        .genre-fit { color: var(--text-dim); font-weight: 500; }
+        .genre-why {
+            background: none;
+            border: none;
+            padding: 0;
+            color: var(--text-dim);
+            font-size: 11px;
+            text-decoration: underline;
+            cursor: pointer;
+        }
+        .genre-why:hover { color: var(--text); }
+        .genre-detail {
+            margin-top: 8px;
+            padding: 8px 10px;
+            background: var(--surface2);
+            border-radius: 8px;
+            font-size: 11px;
+            line-height: 1.5;
+            color: var(--text-dim);
+        }
+        .genre-detail .genre-q { color: var(--text); }
+        .genre-detail .genre-alt { margin-top: 6px; font-style: italic; }
         .video-card .card-footer {
             display: flex;
             align-items: center;
@@ -947,6 +986,37 @@
             resultsContainer.appendChild(card);
         }
 
+        // The genre line: what the model concluded and how decisive the evidence
+        // was. "why?" opens the answers it used, so the guess can be checked.
+        function renderGenre(genre) {
+            if (!genre || !genre.genre) return '';
+            const fit = Math.round((genre.confidence || 0) * 100);
+            const evidence = (genre.evidence || []).map(item => `
+                <div class="genre-evidence">
+                    <span class="genre-q">${escapeHtml(item.question)}</span>
+                    ${escapeHtml(item.answer)}
+                </div>`).join('');
+            const runnerUp = (genre.alternatives && genre.alternatives[0]) || null;
+            const alt = runnerUp
+                ? `<div class="genre-alt">Closest alternative: ${escapeHtml(runnerUp.genre)}</div>`
+                : '';
+            return `
+                <div class="genre-line">
+                    <span class="genre-chip" title="Inferred from the listing, not from the audio">${escapeHtml(genre.genre)} <span class="genre-fit">${fit}% fit</span></span>
+                    <button class="genre-why" onclick="toggleGenre(event, this)">why?</button>
+                </div>
+                <div class="genre-detail" hidden>${evidence}${alt}</div>`;
+        }
+
+        function toggleGenre(event, btn) {
+            event.stopPropagation();
+            const detail = btn.closest('.genre-line').nextElementSibling;
+            if (!detail || !detail.classList.contains('genre-detail')) return;
+            const opening = detail.hidden;
+            detail.hidden = !opening;
+            btn.textContent = opening ? 'hide' : 'why?';
+        }
+
         function createVideoCard(result) {
             const card = document.createElement('div');
             card.className = 'video-card';
@@ -964,6 +1034,8 @@
             const scoreHtml = score > 0
                 ? `<div class="relevance-score">Relevance: ${(score * 100).toFixed(0)}%</div>` : '';
 
+            const genreHtml = renderGenre(result.genre);
+
             card.innerHTML = `
                 <div class="thumb-wrapper" onclick="openPlayer('${escapeAttr(result.url)}', '${escapeAttr(result.title)}', '${escapeAttr(result.description || '')}')">
                     ${thumbHtml}
@@ -973,6 +1045,7 @@
                 <div class="card-body" onclick="openPlayer('${escapeAttr(result.url)}', '${escapeAttr(result.title)}', '${escapeAttr(result.description || '')}')">
                     <div class="card-title">${escapeHtml(result.title)}</div>
                     <div class="card-desc">${escapeHtml(result.description || '')}</div>
+                    ${genreHtml}
                 </div>
                 <div class="dl-progress" id="dlprog-${cardId}">
                     <div class="dl-progress-bar"><div class="dl-progress-fill"></div></div>
@@ -998,6 +1071,7 @@
             card.addEventListener('click', (e) => {
                 if (!socket) return;
                 if (e.target.closest('.download-btn') || e.target.closest('.dl-progress')) return;
+                if (e.target.closest('.genre-why') || e.target.closest('.genre-detail')) return;
                 socket.emit('record_click', {
                     url: result.url,
                     title: result.title,
