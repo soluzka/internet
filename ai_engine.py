@@ -1040,6 +1040,9 @@ class DiscoveryAgent:
         self.database = database
         self.scraper = VideoScraper()
         self.is_running = False
+        # URLs added by the most recent discovery run, so a search can say how
+        # many of them actually ended up among its own matches.
+        self.last_added_urls = set()
 
     async def discover(self, query: str, socketio=None) -> int:
         """Discover videos for a query and add them to the database."""
@@ -1047,6 +1050,7 @@ class DiscoveryAgent:
         try:
             results = await self.scraper.search_all(query, socketio)
             added = 0
+            added_urls = set()
             for r in results:
                 if self.database.add_video(
                     url=r['url'],
@@ -1058,6 +1062,8 @@ class DiscoveryAgent:
                     platform=r.get('platform', 'Unknown'),
                 ):
                     added += 1
+                    added_urls.add(r['url'])
+            self.last_added_urls = added_urls
             # Skip expensive ML rebuild on Render (slow free tier CPU)
             if not os.environ.get('RENDER'):
                 self.database.rebuild()
@@ -1229,7 +1235,62 @@ def setup_routes(app, socketio):
     discovery_agent = DiscoveryAgent(database)
     ranking_agent = RankingAgent(database)
     download_manager = DownloadManager()
-    search_in_progress = False
+    # Timestamp of the running search (0 = idle). A timestamp rather than a flag
+    # so a search that died without clearing it cannot block the app forever.
+    search_started_at = 0.0
+
+    # Background discovery: one thread per query at a time, so answering a
+    # search never waits for scraping and repeats do not hammer the same sites.
+    discovery_threads = {}
+    discovery_lock = threading.Lock()
+
+    def _run_discovery(query: str) -> None:
+        """Scrape for a query in the background and report what turned up."""
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                added = loop.run_until_complete(
+                    asyncio.wait_for(
+                        discovery_agent.discover(query, socketio=None),
+                        timeout=DISCOVERY_TIMEOUT_DEFAULT,
+                    )
+                )
+            finally:
+                loop.close()
+        except asyncio.TimeoutError:
+            added = len(getattr(discovery_agent, 'last_added_urls', set()))
+            logger.warning('Discovery timed out for %r; keeping what it stored', query)
+        except Exception as exc:
+            logger.error('Discovery failed for %r: %s', query, exc)
+            return
+
+        try:
+            database.rebuild()
+            new_urls = set(getattr(discovery_agent, 'last_added_urls', set()))
+            new_matches = [r for r in database.search(query) if r['url'] in new_urls]
+            if new_matches:
+                new_matches = ranking_agent.rank(query, new_matches)
+            socketio.emit('discovery_results', {
+                'query': query,
+                'discovered': added,
+                'matched': len(new_matches),
+                'total': database.count_matches(query),
+                'stats': database.get_stats(),
+                'results': new_matches,
+            })
+        except Exception as exc:
+            logger.error('Discovery reporting failed for %r: %s', query, exc)
+
+    def start_background_discovery(query: str) -> None:
+        with discovery_lock:
+            running = discovery_threads.get(query)
+            if running and running.is_alive():
+                logger.info('Discovery already running for %r', query)
+                return
+            thread = threading.Thread(target=_run_discovery, args=(query,), daemon=True)
+            discovery_threads[query] = thread
+            thread.start()
 
     @socketio.on('connect')
     def handle_connect():
@@ -1247,19 +1308,30 @@ def setup_routes(app, socketio):
     @socketio.on('search_query')
     def handle_search_query(data):
         """Handle a search query using the AI search engine."""
-        nonlocal search_in_progress
+        nonlocal search_started_at
         query = (data or {}).get('query', '').strip()
         if not query:
             emit('search_error', {'error': 'No query provided'})
             return
-        if search_in_progress:
-            emit('search_error', {'error': 'Another search is in progress'})
+
+        now = time.time()
+        stale_after = DISCOVERY_TIMEOUT_DEFAULT + 60
+        if search_started_at and now - search_started_at < stale_after:
+            remaining = int(stale_after - (now - search_started_at))
+            emit('search_error', {
+                'error': f'A search is still running (about {remaining}s left). '
+                         'Results already found stay on the page.'
+            })
             return
+        if search_started_at:
+            logger.warning(
+                'Previous search never cleared its lock after %.0fs; starting anyway',
+                now - search_started_at,
+            )
 
-        search_in_progress = True
-        emit('search_started', {'query': query})
-
+        search_started_at = now
         try:
+            emit('search_started', {'query': query})
             is_render = os.environ.get('RENDER')
 
             if is_render:
@@ -1297,45 +1369,13 @@ def setup_routes(app, socketio):
                     'stats': database.get_stats(),
                 })
             else:
-                # FULL MODE (local): ML search + discovery + ranking
-                db_results = database.search(query)
-                streamed = set()
-                for r in db_results:
-                    streamed.add(r['url'])
+                # FULL MODE (local): answer from the index immediately. Scraping
+                # is slow and used to hold the whole search hostage; it now runs
+                # in the background and reports back when it finds something.
+                ranked = ranking_agent.rank(query, database.search(query))
+                for r in ranked:
                     emit('new_result', {'result': r})
 
-                discovery_timeout = DISCOVERY_TIMEOUT_DEFAULT
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    # No socket passed in: discovery must not stream every raw
-                    # hit to the page. Only the ranked results below are sent.
-                    added = loop.run_until_complete(
-                        asyncio.wait_for(
-                            discovery_agent.discover(query, socketio=None),
-                            timeout=discovery_timeout,
-                        )
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        f'Discovery timed out after {discovery_timeout}s; '
-                        'answering from the local index'
-                    )
-                    added = 0
-                finally:
-                    loop.close()
-
-                database.rebuild()
-                all_results = database.search(query)
-                ranked = ranking_agent.rank(query, all_results)
-
-                # Send the ranked results the earlier stream did not include
-                for r in ranked:
-                    if r['url'] not in streamed:
-                        streamed.add(r['url'])
-                        emit('new_result', {'result': r})
-
-                # Real number of matches, not the 100-result display cap
                 total_matches = database.count_matches(query)
 
                 conn = sqlite3.connect(database.db_path)
@@ -1349,15 +1389,19 @@ def setup_routes(app, socketio):
                 emit('search_completed', {
                     'query': query,
                     'total': total_matches,
-                    'shown': len(streamed),
-                    'discovered': added,
+                    'shown': len(ranked),
+                    'discovered': 0,
+                    'discovered_matched': 0,
+                    'discovering': True,
                     'stats': database.get_stats(),
                 })
+
+                start_background_discovery(query)
         except Exception as e:
             logger.error(f'Search error: {str(e)}')
             emit('search_error', {'error': str(e)})
         finally:
-            search_in_progress = False
+            search_started_at = 0.0
 
     @socketio.on('record_click')
     def handle_record_click(data):
@@ -1523,11 +1567,13 @@ def setup_routes(app, socketio):
                 conn.commit()
                 conn.close()
 
+                discovered_urls = getattr(discovery_agent, 'last_added_urls', set())
                 return jsonify({
                     'query': query,
                     'total': database.count_matches(query),
                     'shown': len(ranked),
                     'discovered': discovered,
+                    'discovered_matched': sum(1 for r in ranked if r['url'] in discovered_urls),
                     'results': ranked,
                     'stats': database.get_stats(),
                 })

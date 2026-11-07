@@ -166,6 +166,12 @@
             color: var(--text-dim);
             font-size: 12px;
         }
+        .discovery-note {
+            display: block;
+            margin-top: 6px;
+            color: var(--text-dim);
+            font-size: 12px;
+        }
         .ai-thinking { display: flex; align-items: center; gap: 6px; }
         .ai-dot {
             width: 8px;
@@ -203,6 +209,10 @@
             cursor: pointer;
             transition: transform 0.15s, border-color 0.15s;
             position: relative;
+            /* Searches can return thousands of cards; skip painting the ones
+               that are off screen so the page never locks up. */
+            content-visibility: auto;
+            contain-intrinsic-size: 320px;
         }
         .video-card:hover { transform: translateY(-2px); border-color: var(--accent); }
         .video-card .thumb-wrapper {
@@ -278,9 +288,11 @@
             display: flex;
             align-items: center;
             justify-content: space-between;
+            gap: 8px;
             padding: 8px 14px;
             border-top: 1px solid var(--border);
         }
+        .footer-actions { display: flex; align-items: center; gap: 8px; }
         .video-card .relevance-score {
             font-size: 11px;
             color: var(--accent2);
@@ -301,6 +313,38 @@
         .download-btn:hover { background: var(--accent); border-color: var(--accent); }
         .download-btn:disabled { opacity: 0.5; cursor: not-allowed; }
         .download-btn svg { width: 14px; height: 14px; }
+        /* Every card links to its source, so a blocked embed is never a dead end */
+        .open-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 14px;
+            border-radius: 8px;
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--accent2);
+            font-size: 13px;
+            font-weight: 600;
+            text-decoration: none;
+            transition: all 0.15s;
+        }
+        .open-link:hover { background: var(--surface2); border-color: var(--accent2); }
+        .open-link svg { width: 14px; height: 14px; }
+        .player-open {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin-top: 12px;
+            padding: 10px 16px;
+            border-radius: 8px;
+            background: var(--accent);
+            color: #fff;
+            font-size: 14px;
+            font-weight: 600;
+            text-decoration: none;
+        }
+        .player-open:hover { filter: brightness(1.1); }
+        .player-open svg { width: 15px; height: 15px; }
         .dl-progress {
             display: none;
             padding: 8px 14px;
@@ -487,6 +531,11 @@
             <div class="player-info">
                 <div class="player-title" id="playerTitle"></div>
                 <div class="player-desc" id="playerDesc"></div>
+                <a class="player-open" id="playerOpen" href="#" target="_blank" rel="noopener noreferrer"
+                   onclick="return openExternal(this.href, event)">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>
+                    <span id="playerOpenText">Open on the source site</span>
+                </a>
             </div>
         </div>
     </div>
@@ -570,7 +619,7 @@
         }
 
         try {
-            socket = io({ timeout: 3000, reconnection: false });
+            socket = io({ timeout: 10000, reconnection: false });
             // First failure switches to the bundled index for good, so a static
             // host does not get hammered with /socket.io requests.
             socket.on('connect_error', () => {
@@ -640,12 +689,33 @@
                 const library = (data.stats && data.stats.total_videos) || 0;
                 const extras = [];
                 if (shown < data.total) extras.push(`showing ${shown}`);
-                if (discovered > 0) extras.push(`AI discovered ${discovered} new`);
+                if (discovered > 0) {
+                    const matched = data.discovered_matched || 0;
+                    extras.push(matched
+                        ? `AI added ${discovered} videos to the index, ${matched} of them match this search`
+                        : `AI added ${discovered} videos to the index, none of them match this search`);
+                }
+                if (data.discovering) extras.push('searching the web for more in the background');
                 aiStatus.innerHTML = renderSummary(data.query, data.total, library, extras);
                 updateStats(data.stats);
                 if (isVoiceSearch) {
                     speak(`Found ${data.total} videos about ${data.query}`);
                     isVoiceSearch = false;
+                }
+            });
+
+            socket.on('discovery_results', (data) => {
+                if (!data || data.query !== currentQuery) return;
+                const found = data.results || [];
+                if (found.length) appendResults(found);
+                updateStats(data.stats);
+                if (data.discovered > 0 || found.length) {
+                    const note = document.createElement('div');
+                    note.className = 'discovery-note';
+                    note.textContent = found.length
+                        ? `AI discovery added ${data.discovered} videos, ${found.length} of them match this search`
+                        : `AI discovery added ${data.discovered} videos, none of them match this search`;
+                    aiStatus.appendChild(note);
                 }
             });
 
@@ -784,7 +854,7 @@
             card.id = cardId;
 
             const thumbHtml = result.thumbnail
-                ? `<img src="${result.thumbnail}" alt="${escapeHtml(result.title)}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div class="thumb-placeholder" style="display:none">&#9658;</div>`
+                ? `<img src="${result.thumbnail}" alt="${escapeHtml(result.title)}" loading="lazy" decoding="async" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div class="thumb-placeholder" style="display:none">&#9658;</div>`
                 : `<div class="thumb-placeholder">&#9658;</div>`;
 
             const durationHtml = result.duration && result.duration !== 'Unknown'
@@ -810,10 +880,17 @@
                 </div>
                 <div class="card-footer">
                     ${scoreHtml}
-                    <button class="download-btn" id="dlbtn-${cardId}" onclick="downloadVideo('${escapeAttr(result.url)}', '${escapeAttr(result.title)}', '${cardId}', this, event)">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
-                        Download
-                    </button>
+                    <div class="footer-actions">
+                        <a class="open-link" href="${escapeAttr(result.url)}" target="_blank" rel="noopener noreferrer"
+                           onclick="event.stopPropagation(); return openExternal(this.href, event)" title="Open this video on the original site">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>
+                            Open
+                        </a>
+                        <button class="download-btn" id="dlbtn-${cardId}" onclick="downloadVideo('${escapeAttr(result.url)}', '${escapeAttr(result.title)}', '${cardId}', this, event)">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+                            Download
+                        </button>
+                    </div>
                 </div>
             `;
 
@@ -829,6 +906,18 @@
             });
 
             return card;
+        }
+
+        // Opening the source site: window.open is swallowed in the packaged
+        // desktop shell, so fall back to navigating this tab.
+        function openExternal(url, event) {
+            if (event) event.preventDefault();
+            try {
+                const opened = window.open(url, '_blank', 'noopener');
+                if (opened) return false;
+            } catch (err) {}
+            window.location.href = url;
+            return false;
         }
 
         // --- Video Player ---
@@ -849,7 +938,20 @@
                 const vid = url.match(/vimeo\.com\/(\d+)/);
                 if (vid) embed = `<iframe width="100%" height="100%" src="https://player.vimeo.com/video/${vid[1]}" frameborder="0" allowfullscreen></iframe>`;
             } else {
-                embed = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#888">No inline player for this source.<br><a href="${url}" target="_blank" style="color:#6c5ce7">Open &rarr;</a></div>`;
+                embed = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#888">No inline player for this source — use the button below.</div>`;
+            }
+
+            // Always offer a way out: embeds get blocked by X-Frame-Options,
+            // region locks and privacy settings, and an empty frame is a dead end.
+            let sourceHost = 'the source site';
+            try {
+                sourceHost = new URL(url).hostname.replace(/^www\./, '');
+            } catch (err) {}
+            const openLink = document.getElementById('playerOpen');
+            if (openLink) {
+                openLink.href = url;
+                const openText = document.getElementById('playerOpenText');
+                if (openText) openText.textContent = 'Open on ' + sourceHost;
             }
 
             video.innerHTML = embed;
@@ -863,6 +965,12 @@
             document.getElementById('playerOverlay').classList.remove('active');
             document.getElementById('playerVideo').innerHTML = '';
         }
+
+        // Escape closes the player too: an embed that refuses to load can
+        // otherwise leave the overlay feeling stuck.
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') closePlayer();
+        });
 
         // --- Download ---
         function downloadVideo(url, title, cardId, btn, event) {
