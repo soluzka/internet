@@ -1,6 +1,8 @@
 import os
 import sys
 import logging
+import subprocess
+import tempfile
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -12,7 +14,7 @@ scrape_dir = os.path.join(current_dir, 'scrape')
 sys.path.insert(0, current_dir)
 sys.path.insert(0, scrape_dir)
 
-from flask import Flask, send_from_directory, send_file
+from flask import Flask, send_from_directory, send_file, request, jsonify
 from flask_cors import CORS
 from flask_socketio import SocketIO
 from ai_engine import setup_routes
@@ -76,6 +78,129 @@ socketio = SocketIO(
     logger=False,
     engineio_logger=False
 )
+
+# --- Voice search ---------------------------------------------------------
+# Transcribes a recorded clip with the speech recogniser built into Windows,
+# so voice search needs no API key and no network round trip.
+SAPI_SCRIPT = r'''
+Add-Type -AssemblyName System.Speech
+$rec = New-Object System.Speech.Recognition.SpeechRecognitionEngine
+$rec.LoadGrammar((New-Object System.Speech.Recognition.DictationGrammar))
+$rec.SetInputToWaveFile('%s')
+$result = $rec.Recognize()
+if ($result) {
+    [Console]::Out.WriteLine($result.Text)
+    [Console]::Out.Write($result.Confidence)
+}
+$rec.Dispose()
+'''
+
+# Anything below this is usually background noise, not a spoken query.
+MIN_CONFIDENCE = 0.3
+
+# Whisper is the primary engine; the Windows recogniser is the fallback.
+WHISPER_MODEL = os.environ.get('WHISPER_MODEL', 'base.en')
+_whisper_model = None
+_whisper_unavailable = False
+
+
+def _transcribe_with_whisper(wav_path):
+    """Return the transcript, or None when Whisper is not usable here."""
+    global _whisper_model, _whisper_unavailable
+    if _whisper_unavailable:
+        return None
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        logger.warning('faster-whisper is not installed; using the Windows recogniser')
+        _whisper_unavailable = True
+        return None
+
+    if _whisper_model is None:
+        logger.info(f'Loading Whisper model {WHISPER_MODEL}')
+        _whisper_model = WhisperModel(WHISPER_MODEL, device='cpu', compute_type='int8')
+
+    segments, _info = _whisper_model.transcribe(wav_path, beam_size=1, language='en', vad_filter=True)
+    return ' '.join(segment.text.strip() for segment in segments).strip()
+
+
+def _audio_to_wav(audio_bytes, suffix):
+    import imageio_ffmpeg
+
+    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    src = tempfile.NamedTemporaryFile(delete=False, suffix=suffix).name
+    dst = src + '.wav'
+    with open(src, 'wb') as handle:
+        handle.write(audio_bytes)
+    try:
+        proc = subprocess.run(
+            [ffmpeg, '-y', '-hide_banner', '-loglevel', 'error', '-i', src,
+             '-ac', '1', '-ar', '16000', '-f', 'wav', dst],
+            capture_output=True, text=True, timeout=60)
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.strip() or 'ffmpeg could not decode the clip')
+        return dst
+    finally:
+        try:
+            os.remove(src)
+        except OSError:
+            pass
+
+
+def _recognize_wav(wav_path):
+    script = SAPI_SCRIPT % wav_path.replace("'", "''")
+    proc = subprocess.run(
+        ['powershell', '-NoProfile', '-NonInteractive', '-Command', script],
+        capture_output=True, text=True, timeout=90)
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or 'speech recognition failed')
+
+    lines = [line.strip() for line in proc.stdout.strip().splitlines() if line.strip()]
+    if len(lines) < 2:
+        return ''
+    text, confidence = lines[0], lines[-1]
+    try:
+        if float(confidence) < MIN_CONFIDENCE:
+            logger.info(f"Discarding low-confidence transcript ({confidence}): {text}")
+            return ''
+    except ValueError:
+        pass
+    return text
+
+
+@app.route('/api/transcribe', methods=['POST'])
+def api_transcribe():
+    audio = request.get_data()
+    if not audio:
+        return jsonify({'error': 'Empty audio'}), 400
+    if os.name != 'nt':
+        return jsonify({'error': 'Offline transcription is only available on Windows'}), 503
+
+    mime = (request.mimetype or '').split(';')[0]
+    suffix = {'audio/webm': '.webm', 'audio/ogg': '.ogg', 'audio/wav': '.wav',
+              'audio/mp4': '.m4a', 'audio/mpeg': '.mp3'}.get(mime, '.webm')
+
+    wav = None
+    try:
+        wav = _audio_to_wav(audio, suffix)
+        text = None
+        try:
+            text = _transcribe_with_whisper(wav)
+        except Exception:
+            logger.exception('Whisper failed; falling back to the Windows recogniser')
+        if text is None:
+            text = _recognize_wav(wav)
+        return jsonify({'text': text})
+    except Exception as exc:
+        logger.exception('Transcription failed')
+        return jsonify({'error': 'Transcription failed: %s' % exc}), 500
+    finally:
+        if wav and os.path.exists(wav):
+            try:
+                os.remove(wav)
+            except OSError:
+                pass
+
 
 @app.route('/')
 def index():

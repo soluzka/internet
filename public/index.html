@@ -1030,7 +1030,11 @@
                 if (!response.ok) throw new Error('HTTP ' + response.status);
                 const data = await response.json();
                 const text = (data.text || '').trim();
-                if (!text) throw new Error('empty transcript');
+                if (!text) {
+                    voiceTranscript.textContent = '';
+                    showToast('error', 'Voice error', VOICE_ERRORS['no-speech'], { autoClose: 6000 });
+                    return;
+                }
                 voiceTranscript.textContent = '"' + text + '"';
                 searchInput.value = text;
                 isVoiceSearch = true;

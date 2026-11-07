@@ -36,6 +36,10 @@ numpy>=2.3.0
 scipy>=1.14.0
 scikit-learn>=1.5.0
 
+# Speech-to-text for voice search (app.py falls back to the Windows
+# recogniser when this is not installed)
+faster-whisper>=1.0.0
+
 # Build tools
 wheel
 setuptools>=64.0.0
