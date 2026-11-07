@@ -485,13 +485,81 @@
         // Detect if Socket.IO is available (works locally, falls back on Vercel)
         let socket = null;
         let useHttpFallback = false;
+
+        // --- Bundled index: used when no backend is reachable (static hosting) ---
+        let videoIndex = null;
+        let indexStats = null;
+        let indexRequest = null;
+
+        function loadIndex() {
+            if (!indexRequest) {
+                indexRequest = fetch('data/videos.json')
+                    .then(r => {
+                        if (!r.ok) throw new Error('index unavailable (' + r.status + ')');
+                        return r.json();
+                    })
+                    .then(data => {
+                        videoIndex = data.videos || [];
+                        indexStats = {
+                            total_videos: data.count || videoIndex.length,
+                            total_searches: data.searches || 0,
+                            total_clicks: data.clicks || 0,
+                        };
+                        return videoIndex;
+                    });
+            }
+            return indexRequest;
+        }
+
+        function tokenize(text) {
+            return String(text || '').toLowerCase().match(/[a-z0-9']+/g) || [];
+        }
+
+        // Keyword scoring over the bundled index: title beats tags beats description.
+        function localSearch(query, limit) {
+            const terms = tokenize(query);
+            if (!terms.length || !videoIndex) return [];
+            const scored = [];
+            videoIndex.forEach(v => {
+                const title = (v.t || '').toLowerCase();
+                const tags = (v.tg || '').toLowerCase();
+                const desc = (v.d || '').toLowerCase();
+                let score = 0;
+                let matched = 0;
+                terms.forEach(term => {
+                    let termScore = 0;
+                    if (title.includes(term)) termScore += 3;
+                    if (tags.includes(term)) termScore += 2;
+                    if (desc.includes(term)) termScore += 1;
+                    if (termScore) matched += 1;
+                    score += termScore;
+                });
+                if (!matched) return;
+                score *= matched / terms.length;
+                score += Math.min(v.c || 0, 10) * 0.1;
+                scored.push({ video: v, score: score });
+            });
+            scored.sort((a, b) => b.score - a.score);
+            const best = scored.length ? scored[0].score : 0;
+            return scored.slice(0, limit).map(item => ({
+                url: item.video.u,
+                title: item.video.t,
+                description: item.video.d,
+                thumbnail: item.video.th,
+                duration: item.video.du,
+                source: item.video.s,
+                score: best ? Math.min(item.score / best, 1) : 0,
+            }));
+        }
+
         try {
             socket = io({ timeout: 3000 });
-            // If connection fails, switch to HTTP mode
+            // If connection fails, switch to the bundled index
             socket.on('connect_error', () => {
-                console.log('Socket.IO unavailable, using HTTP fallback');
+                console.log('Socket.IO unavailable, using bundled index');
                 useHttpFallback = true;
                 socket = null;
+                loadIndex().then(() => updateStats(indexStats)).catch(() => {});
             });
         } catch (e) {
             useHttpFallback = true;
@@ -519,9 +587,9 @@
             });
         }
 
-        // HTTP fallback: load stats on page load
+        // No backend: stats come from the bundled index
         if (useHttpFallback) {
-            fetch('/api/stats').then(r => r.json()).then(stats => updateStats(stats)).catch(() => {});
+            loadIndex().then(() => updateStats(indexStats)).catch(() => {});
         }
 
         if (socket) {
@@ -601,43 +669,34 @@
                     }
                 }, 45000);
             } else {
-                // HTTP fallback mode (Vercel) - get all results at once
+                // No backend: search the bundled index in the browser
                 searchBtn.disabled = true;
                 searchBtn.textContent = 'Searching...';
-                aiStatus.innerHTML = '<div class="ai-thinking"><div class="ai-dot"></div>AI agents discovering videos...</div>';
+                aiStatus.innerHTML = '<div class="ai-thinking"><div class="ai-dot"></div>Searching the video index...</div>';
 
-                fetch('/api/search', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ query: query })
-                })
-                .then(r => r.json())
-                .then(data => {
-                    if (data.error) {
-                        searchBtn.disabled = false;
-                        searchBtn.textContent = 'Search';
-                        aiStatus.innerHTML = '';
-                        showToast('error', 'Search Error', data.error);
-                        return;
-                    }
+                loadIndex()
+                .then(() => {
+                    const results = localSearch(query, 40);
                     searchBtn.disabled = false;
                     searchBtn.textContent = 'Search';
-                    const discovered = data.discovered || 0;
-                    aiStatus.innerHTML = `<div>Found ${data.total} results${discovered > 0 ? ' &middot; AI discovered ' + discovered + ' new' : ''}</div>`;
-                    updateStats(data.stats);
+                    aiStatus.innerHTML = `<div>Found ${results.length} results</div>`;
+                    updateStats(indexStats);
 
                     // Remove empty state and show results
                     const empty = document.getElementById('emptyState');
                     if (empty) empty.remove();
 
-                    // Show results
-                    (data.results || []).forEach(result => {
+                    results.forEach(result => {
                         appendResult(result);
                     });
 
+                    if (!results.length) {
+                        resultsContainer.innerHTML = '<div class="empty-state"><h2>No matches</h2><p>Try a different keyword.</p></div>';
+                    }
+
                     // Speak if voice search
                     if (isVoiceSearch) {
-                        speak(`Found ${data.total} videos about ${data.query}`);
+                        speak(`Found ${results.length} videos about ${query}`);
                         isVoiceSearch = false;
                     }
                 })
@@ -645,7 +704,7 @@
                     searchBtn.disabled = false;
                     searchBtn.textContent = 'Search';
                     aiStatus.innerHTML = '';
-                    showToast('error', 'Search Error', 'Failed to connect to server');
+                    showToast('error', 'Search Error', 'Could not load the video index');
                 });
             }
         }
@@ -698,6 +757,7 @@
 
             // Record click when card is clicked
             card.addEventListener('click', (e) => {
+                if (!socket) return;
                 if (e.target.closest('.download-btn') || e.target.closest('.dl-progress')) return;
                 socket.emit('record_click', {
                     url: result.url,
@@ -757,25 +817,11 @@
                 // Socket.IO mode (local) - real-time progress
                 socket.emit('download_video', { url: url });
             } else {
-                // HTTP fallback mode (Vercel) - no progress, just wait
-                if (progEl) {
-                    progEl.querySelector('.dl-progress-text').textContent = 'Downloading (no progress on Vercel)...';
-                }
-                fetch('/api/download', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url: url })
-                })
-                .then(r => r.json())
-                .then(data => {
-                    if (data.error) {
-                        handleDownloadError({ url: url, error: data.error });
-                    } else {
-                        handleDownloadComplete({ url: url, token: data.token, title: title });
-                    }
-                })
-                .catch(err => {
-                    handleDownloadError({ url: url, error: 'Failed to connect to server' });
+                // Static hosting has no yt-dlp, so send the user to the source page
+                if (progEl) progEl.classList.remove('active');
+                handleDownloadError({
+                    url: url,
+                    error: 'Downloads need the local desktop app. Open the video on its source site instead.'
                 });
             }
         }

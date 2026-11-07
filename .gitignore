@@ -21,6 +21,8 @@ backups/
 *.db
 *.sqlite3
 *.log
+# The backend's video index ships with the repo
+!data/video_index.db
 
 # Freebuff desktop metadata
 .freebuff/
