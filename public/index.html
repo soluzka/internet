@@ -553,11 +553,14 @@
         }
 
         try {
-            socket = io({ timeout: 3000 });
-            // If connection fails, switch to the bundled index
+            socket = io({ timeout: 3000, reconnection: false });
+            // First failure switches to the bundled index for good, so a static
+            // host does not get hammered with /socket.io requests.
             socket.on('connect_error', () => {
+                if (useHttpFallback) return;
                 console.log('Socket.IO unavailable, using bundled index');
                 useHttpFallback = true;
+                try { socket.disconnect(); } catch (err) {}
                 socket = null;
                 loadIndex().then(() => updateStats(indexStats)).catch(() => {});
             });
@@ -900,6 +903,10 @@
         // --- Voice Assistant ---
         let isVoiceSearch = false;
         let voiceBusy = false;
+        let voiceStream = null;
+        let mediaRecorder = null;
+        let recordedChunks = [];
+        let recordTimer = null;
 
         // The microphone is only available on a secure origin (https or localhost).
         // On a LAN IP Chrome refuses it without prompting and reports "not-allowed".
@@ -920,22 +927,19 @@
             'network': 'The speech recognition service is unreachable. Check your connection and try again.'
         };
 
-        // Ask for the microphone before starting recognition so the browser shows
-        // its permission prompt; recognition.start() alone only fails with "not-allowed".
-        async function requestMicAccess() {
+        // Ask for the microphone once and keep the stream for recording.
+        async function requestMicStream() {
             const hint = secureOriginHint();
             if (hint) {
                 showToast('error', 'Microphone blocked', hint, { autoClose: 8000 });
-                return false;
+                return null;
             }
             if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
                 showToast('error', 'Microphone blocked', 'This browser does not expose the microphone to the page.', { autoClose: 8000 });
-                return false;
+                return null;
             }
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                stream.getTracks().forEach(track => track.stop());
-                return true;
+                return await navigator.mediaDevices.getUserMedia({ audio: true });
             } catch (err) {
                 const name = (err && err.name) || '';
                 let message = 'Could not start the microphone.';
@@ -947,32 +951,103 @@
                     message = 'The microphone is in use by another app. Close it and try again.';
                 }
                 showToast('error', 'Microphone blocked', message, { autoClose: 8000 });
-                return false;
+                return null;
             }
         }
 
-        async function toggleVoice() {
-            if (isListening) {
-                if (recognition) recognition.stop();
-                return;
+        function stopMicStream() {
+            if (voiceStream) {
+                voiceStream.getTracks().forEach(track => track.stop());
+                voiceStream = null;
             }
-            if (voiceBusy) return;
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (!SpeechRecognition) {
-                showToast('error', 'Voice not supported', 'Use Chrome or Edge to search by voice', { autoClose: 5000 });
-                return;
-            }
-            // Cancel any speech from previous search
-            if ('speechSynthesis' in window) speechSynthesis.cancel();
+        }
 
-            voiceBusy = true;
-            let granted = false;
+        // Path 1: record a short clip and let the Worker transcribe it, so voice
+        // works in browsers without a speech service (Firefox, Chromium, Electron).
+        function startRecording() {
+            if (mediaRecorder && mediaRecorder.state === 'recording') return true;
+            if (!window.MediaRecorder || !voiceStream) return false;
+            let mimeType = '';
+            if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) mimeType = 'audio/webm;codecs=opus';
+            else if (MediaRecorder.isTypeSupported('audio/webm')) mimeType = 'audio/webm';
+            if (!mimeType) return false;
+
+            recordedChunks = [];
             try {
-                granted = await requestMicAccess();
-            } finally {
-                voiceBusy = false;
+                mediaRecorder = new MediaRecorder(voiceStream, { mimeType: mimeType });
+            } catch (e) {
+                return false;
             }
-            if (!granted) return;
+            mediaRecorder.ondataavailable = (event) => {
+                if (event.data && event.data.size) recordedChunks.push(event.data);
+            };
+            mediaRecorder.onstop = () => finishRecording();
+            mediaRecorder.start();
+
+            isListening = true;
+            voiceBtn.classList.add('listening');
+            voiceTranscript.textContent = 'Listening... tap the mic again to stop';
+            recordTimer = setTimeout(stopRecording, 8000);
+            return true;
+        }
+
+        function stopRecording() {
+            if (recordTimer) {
+                clearTimeout(recordTimer);
+                recordTimer = null;
+            }
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+                return;
+            }
+            isListening = false;
+            voiceBtn.classList.remove('listening');
+            stopMicStream();
+        }
+
+        async function finishRecording() {
+            isListening = false;
+            voiceBtn.classList.remove('listening');
+            stopMicStream();
+            const type = (mediaRecorder && mediaRecorder.mimeType) || 'audio/webm';
+            mediaRecorder = null;
+            const blob = new Blob(recordedChunks, { type: type });
+            recordedChunks = [];
+
+            if (!blob.size) {
+                voiceTranscript.textContent = '';
+                showToast('error', 'Voice error', VOICE_ERRORS['no-speech'], { autoClose: 6000 });
+                return;
+            }
+
+            voiceTranscript.textContent = 'Transcribing...';
+            try {
+                const response = await fetch('api/transcribe', {
+                    method: 'POST',
+                    headers: { 'Content-Type': type },
+                    body: blob
+                });
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+                const data = await response.json();
+                const text = (data.text || '').trim();
+                if (!text) throw new Error('empty transcript');
+                voiceTranscript.textContent = '"' + text + '"';
+                searchInput.value = text;
+                isVoiceSearch = true;
+                setTimeout(() => doSearch(), 300);
+            } catch (err) {
+                console.log('Server transcription unavailable, trying the browser engine:', err.message);
+                if (!startBrowserRecognition()) {
+                    voiceTranscript.textContent = '';
+                    showToast('error', 'Voice error', VOICE_ERRORS['network'], { autoClose: 7000 });
+                }
+            }
+        }
+
+        // Path 2: the browser's own speech engine, where it is available.
+        function startBrowserRecognition() {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRecognition) return false;
 
             recognition = new SpeechRecognition();
             recognition.continuous = false;
@@ -1019,6 +1094,47 @@
                 isListening = false;
                 voiceBtn.classList.remove('listening');
                 showToast('error', 'Voice error', 'Could not start voice search (' + ((e && e.message) || 'unknown error') + ')', { autoClose: 7000 });
+                return false;
+            }
+            return true;
+        }
+
+        function stopListening() {
+            if (mediaRecorder) {
+                stopRecording();
+                return;
+            }
+            if (recognition) {
+                recognition.stop();
+                return;
+            }
+            isListening = false;
+            voiceBtn.classList.remove('listening');
+            stopMicStream();
+        }
+
+        async function toggleVoice() {
+            if (isListening) {
+                stopListening();
+                return;
+            }
+            if (voiceBusy) return;
+
+            // Cancel any speech from previous search
+            if ('speechSynthesis' in window) speechSynthesis.cancel();
+
+            voiceBusy = true;
+            try {
+                voiceStream = await requestMicStream();
+            } finally {
+                voiceBusy = false;
+            }
+            if (!voiceStream) return;
+
+            if (startRecording()) return;
+            stopMicStream();
+            if (!startBrowserRecognition()) {
+                showToast('error', 'Voice not supported', 'This browser cannot record audio or recognise speech. Type your search instead.', { autoClose: 6000 });
             }
         }
 
