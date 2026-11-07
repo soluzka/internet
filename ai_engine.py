@@ -17,6 +17,7 @@ import os
 import re
 import json
 import random
+import shutil
 import asyncio
 import logging
 import tempfile
@@ -1114,6 +1115,24 @@ class DownloadManager:
         self.tokens = {}
         self.token_lock = threading.Lock()
 
+    def _purge_stale_temp_dirs(self, max_age_seconds: int = 3600) -> None:
+        """Delete download folders that were never served or never cleaned up."""
+        root = tempfile.gettempdir()
+        cutoff = time.time() - max_age_seconds
+        try:
+            names = os.listdir(root)
+        except OSError:
+            return
+        for name in names:
+            if not name.startswith('ytdl_'):
+                continue
+            path = os.path.join(root, name)
+            try:
+                if os.path.isdir(path) and os.path.getmtime(path) < cutoff:
+                    shutil.rmtree(path, ignore_errors=True)
+            except OSError:
+                continue
+
     def resolve_url(self, url: str) -> str:
         """Resolve wrapper URLs to direct video URLs."""
         # Check if it's already a supported video URL
@@ -1155,6 +1174,7 @@ class DownloadManager:
                     'status': 'finished',
                 })
 
+        self._purge_stale_temp_dirs()
         tmp_dir = tempfile.mkdtemp(prefix='ytdl_')
         ydl_opts = {
             'format': 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best',
@@ -1382,7 +1402,7 @@ def setup_routes(app, socketio):
                 if os.path.exists(file_path):
                     os.remove(file_path)
                 if tmp_dir and os.path.exists(tmp_dir):
-                    os.rmdir(tmp_dir)
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
             except Exception as e:
                 logger.error(f'Cleanup error: {e}')
 
