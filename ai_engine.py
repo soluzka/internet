@@ -1124,11 +1124,16 @@ class DownloadManager:
 
     def download(self, url: str, socketio, original_url: str = None) -> str:
         """Download a video and return a token for retrieval.
-        Reports progress via Socket.IO."""
+
+        Reports progress via Socket.IO when a socket is given; the HTTP
+        endpoint passes None, so every emit has to be optional.
+        """
         original_url = original_url or url
         url = self.resolve_url(url)
 
         def progress_hook(d):
+            if not socketio:
+                return
             if d['status'] == 'downloading':
                 total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
                 downloaded = d.get('downloaded_bytes', 0)

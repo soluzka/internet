@@ -875,15 +875,55 @@
             window._activeDownloads = window._activeDownloads || {};
             window._activeDownloads[url] = { cardId, btn, progEl, toast };
 
-            if (socket && !useHttpFallback) {
+            if (socket && socket.connected && !useHttpFallback) {
                 // Socket.IO mode (local) - real-time progress
                 socket.emit('download_video', { url: url });
             } else {
-                // Static hosting has no yt-dlp, so send the user to the source page
-                if (progEl) progEl.classList.remove('active');
-                handleDownloadError({
-                    url: url,
-                    error: 'Downloads need the local desktop app. Open the video on its source site instead.'
+                // The local app also exposes HTTP download endpoints, so try those
+                // before giving up. A static host answers with HTML/404 instead.
+                fetch('/api/download', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: url })
+                })
+                .then(async (response) => {
+                    const isJson = (response.headers.get('content-type') || '').includes('application/json');
+                    if (!isJson) {
+                        const err = new Error('No download API');
+                        err.code = 'NO_API';
+                        throw err;
+                    }
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok || !data.token) {
+                        const err = new Error(data.error || 'This video could not be downloaded');
+                        err.code = 'API_ERROR';
+                        throw err;
+                    }
+                    return data;
+                })
+                .then((data) => {
+                    if (progEl) progEl.classList.remove('active');
+                    handleDownloadComplete({ url: url, token: data.token, title: title });
+                })
+                .catch((err) => {
+                    if (progEl) progEl.classList.remove('active');
+                    if (err.code === 'API_ERROR') {
+                        // The server answered and said no: show why.
+                        handleDownloadError({ url: url, error: err.message });
+                        return;
+                    }
+                    // Nothing can download here (static copy): open the source page.
+                    const dl = window._activeDownloads && window._activeDownloads[url];
+                    if (dl) {
+                        removeToast(dl.toast);
+                        if (dl.btn) {
+                            dl.btn.disabled = false;
+                            dl.btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>Download';
+                        }
+                        delete window._activeDownloads[url];
+                    }
+                    window.open(url, '_blank', 'noopener');
+                    showToast('info', 'Opened the source page', 'This copy of the page cannot save files, so the video opened on its original site.', { autoClose: 6000 });
                 });
             }
         }
