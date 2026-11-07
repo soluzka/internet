@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# Node
+node_modules/
+
+# Build output
+build/
+dist/
+
+# Local runtime data and caches
+instance/
+cache/
+backups/
+*.db
+*.sqlite3
+*.log
+
+# Freebuff desktop metadata
+.freebuff/
+
+# Environment secrets
+.env
+.env.*

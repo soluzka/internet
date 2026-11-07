@@ -1,0 +1,1080 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Video Search Engine</title>
+    <link rel="icon" href="/favicon.ico" type="image/x-icon">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --bg: #0a0a0f;
+            --surface: #13131a;
+            --surface2: #1a1a24;
+            --border: #2a2a3a;
+            --text: #e0e0e8;
+            --text-dim: #8888a0;
+            --accent: #6c5ce7;
+            --accent2: #00cec9;
+            --danger: #e74c3c;
+            --success: #00b894;
+            --warning: #fdcb6e;
+        }
+        body {
+            font-family: 'Segoe UI', -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, var(--surface) 0%, var(--surface2) 100%);
+            border-bottom: 1px solid var(--border);
+            padding: 16px 24px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 20px;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+        .logo-icon {
+            width: 36px;
+            height: 36px;
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+        }
+        .logo-text { background: linear-gradient(90deg, var(--accent), var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .header-stats {
+            margin-left: auto;
+            display: flex;
+            gap: 16px;
+            font-size: 13px;
+            color: var(--text-dim);
+        }
+        .stat-item { display: flex; align-items: center; gap: 6px; }
+        .stat-value { color: var(--accent2); font-weight: 600; }
+
+        /* Search section */
+        .search-section {
+            max-width: 900px;
+            margin: 48px auto 24px;
+            padding: 0 24px;
+            text-align: center;
+        }
+        .search-title {
+            font-size: 32px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+        .search-subtitle {
+            color: var(--text-dim);
+            font-size: 15px;
+            margin-bottom: 32px;
+        }
+        .search-bar {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            background: var(--surface);
+            border: 2px solid var(--border);
+            border-radius: 16px;
+            padding: 6px;
+            transition: border-color 0.2s;
+        }
+        .search-bar:focus-within { border-color: var(--accent); }
+        .search-bar input {
+            flex: 1;
+            background: none;
+            border: none;
+            outline: none;
+            color: var(--text);
+            font-size: 16px;
+            padding: 12px 16px;
+        }
+        .search-bar input::placeholder { color: var(--text-dim); }
+        .voice-btn {
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
+            border: none;
+            color: white;
+            width: 48px;
+            height: 48px;
+            border-radius: 12px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: transform 0.15s;
+            flex-shrink: 0;
+        }
+        .voice-btn:hover { transform: scale(1.05); }
+        .voice-btn.listening { animation: pulse 1.2s infinite; }
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(108, 92, 231, 0.4); }
+            50% { box-shadow: 0 0 0 12px rgba(108, 92, 231, 0); }
+        }
+        .search-btn {
+            background: var(--accent);
+            border: none;
+            color: white;
+            padding: 12px 28px;
+            border-radius: 12px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+            flex-shrink: 0;
+        }
+        .search-btn:hover { background: #5b4cdb; }
+        .search-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        /* AI status */
+        .ai-status {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            margin-top: 16px;
+            font-size: 13px;
+            color: var(--text-dim);
+            min-height: 24px;
+        }
+        .ai-thinking { display: flex; align-items: center; gap: 6px; }
+        .ai-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent2);
+            animation: blink 1s infinite;
+        }
+        @keyframes blink { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+
+        /* Voice transcript */
+        .voice-transcript {
+            text-align: center;
+            margin-top: 12px;
+            font-size: 15px;
+            color: var(--accent2);
+            min-height: 22px;
+            font-style: italic;
+        }
+
+        /* Results */
+        .results-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 24px;
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 16px;
+        }
+        .video-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+            cursor: pointer;
+            transition: transform 0.15s, border-color 0.15s;
+            position: relative;
+        }
+        .video-card:hover { transform: translateY(-2px); border-color: var(--accent); }
+        .video-card .thumb-wrapper {
+            position: relative;
+            width: 100%;
+            padding-top: 56.25%;
+            background: var(--surface2);
+            overflow: hidden;
+        }
+        .video-card .thumb-wrapper img {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            object-fit: cover;
+        }
+        .video-card .thumb-placeholder {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-dim);
+            font-size: 40px;
+        }
+        .video-card .duration-badge {
+            position: absolute;
+            bottom: 8px;
+            right: 8px;
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+        .video-card .source-badge {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            padding: 3px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            backdrop-filter: blur(4px);
+        }
+        .source-badge.YouTube { background: rgba(26,26,46,0.9); color: #ff4444; }
+        .source-badge.TikTok { background: rgba(0,0,0,0.9); color: #00f2ea; }
+        .source-badge.Dailymotion { background: rgba(26,26,46,0.9); color: #0066ff; }
+        .source-badge.Vimeo { background: rgba(26,35,51,0.9); color: #4fc3f7; }
+        .source-badge.Instagram { background: rgba(42,26,46,0.9); color: #e1306c; }
+        .source-badge.Twitter { background: rgba(26,35,51,0.9); color: #1da1f2; }
+        .source-badge.Unknown { background: rgba(48,48,48,0.9); color: #aaa; }
+        .video-card .card-body { padding: 12px 14px; }
+        .video-card .card-title {
+            font-size: 14px;
+            font-weight: 600;
+            line-height: 1.4;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            margin-bottom: 8px;
+        }
+        .video-card .card-desc {
+            font-size: 12px;
+            color: var(--text-dim);
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        .video-card .card-footer {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 14px;
+            border-top: 1px solid var(--border);
+        }
+        .video-card .relevance-score {
+            font-size: 11px;
+            color: var(--accent2);
+        }
+        .download-btn {
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 6px 14px;
+            border-radius: 8px;
+            font-size: 12px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.15s;
+        }
+        .download-btn:hover { background: var(--accent); border-color: var(--accent); }
+        .download-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .download-btn svg { width: 14px; height: 14px; }
+        .dl-progress {
+            display: none;
+            padding: 8px 14px;
+            border-top: 1px solid var(--border);
+        }
+        .dl-progress.active { display: block; }
+        .dl-progress-bar {
+            width: 100%;
+            height: 4px;
+            background: var(--surface2);
+            border-radius: 2px;
+            overflow: hidden;
+            margin-bottom: 4px;
+        }
+        .dl-progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent), var(--accent2));
+            width: 0%;
+            transition: width 0.3s;
+        }
+        .dl-progress-text { font-size: 11px; color: var(--text-dim); }
+
+        /* Video player overlay */
+        .player-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        .player-overlay.active { display: flex; }
+        .player-content {
+            max-width: 900px;
+            width: 90%;
+            background: var(--surface);
+            border-radius: 16px;
+            overflow: hidden;
+        }
+        .player-video { width: 100%; aspect-ratio: 16/9; }
+        .player-info { padding: 16px; }
+        .player-title { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
+        .player-desc { color: var(--text-dim); font-size: 14px; }
+        .player-close {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: var(--surface);
+            border: none;
+            color: var(--text);
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            font-size: 20px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* Toast notifications */
+        .toast-container {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            z-index: 2000;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .toast {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 12px 16px;
+            min-width: 280px;
+            max-width: 400px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+            animation: slideIn 0.3s ease;
+        }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        .toast.success { border-color: var(--success); }
+        .toast.error { border-color: var(--danger); }
+        .toast.info { border-color: var(--accent); }
+        .toast-title { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+        .toast.success .toast-title { color: var(--success); }
+        .toast.error .toast-title { color: var(--danger); }
+        .toast.info .toast-title { color: var(--accent); }
+        .toast-body { font-size: 13px; color: var(--text-dim); }
+        .toast-progress-bar {
+            width: 100%;
+            height: 3px;
+            background: var(--surface2);
+            border-radius: 2px;
+            margin-top: 8px;
+            overflow: hidden;
+        }
+        .toast-progress-fill {
+            height: 100%;
+            background: var(--accent);
+            width: 0%;
+            transition: width 0.3s;
+        }
+
+        /* Empty state */
+        .empty-state {
+            text-align: center;
+            padding: 80px 24px;
+            color: var(--text-dim);
+        }
+        .empty-state .empty-icon { font-size: 64px; margin-bottom: 16px; }
+        .empty-state .empty-title { font-size: 20px; font-weight: 600; margin-bottom: 8px; color: var(--text); }
+        .empty-state .empty-desc { font-size: 14px; }
+
+        /* Loading */
+        .loading { text-align: center; padding: 40px; color: var(--text-dim); }
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid var(--surface2);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 16px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Responsive */
+        @media (max-width: 600px) {
+            .header-stats { display: none; }
+            .search-title { font-size: 24px; }
+            .results-container { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <div class="header">
+        <div class="logo">
+            <div class="logo-icon">AI</div>
+            <span class="logo-text">Video Search Engine</span>
+        </div>
+        <div class="header-stats" id="headerStats">
+            <div class="stat-item">Videos: <span class="stat-value" id="statVideos">0</span></div>
+            <div class="stat-item">Searches: <span class="stat-value" id="statSearches">0</span></div>
+            <div class="stat-item">Clicks: <span class="stat-value" id="statClicks">0</span></div>
+        </div>
+    </div>
+
+    <!-- Search Section -->
+    <div class="search-section">
+        <h1 class="search-title">AI-Powered Video Discovery</h1>
+        <p class="search-subtitle">Search, discover, and download videos with machine learning</p>
+        <div class="search-bar">
+            <button class="voice-btn" id="voiceBtn" title="Voice search" onclick="toggleVoice()">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8"/>
+                </svg>
+            </button>
+            <input type="text" id="searchInput" placeholder="Search for videos..." autocomplete="off" onkeypress="if(event.key==='Enter') doSearch()">
+            <button class="search-btn" id="searchBtn" onclick="doSearch()">Search</button>
+        </div>
+        <div class="ai-status" id="aiStatus"></div>
+        <div class="voice-transcript" id="voiceTranscript"></div>
+    </div>
+
+    <!-- Results -->
+    <div class="results-container" id="resultsContainer">
+        <div class="empty-state" id="emptyState">
+            <div class="empty-icon">AI</div>
+            <div class="empty-title">Ready to Search</div>
+            <div class="empty-desc">Type a query or click the microphone to search with your voice</div>
+        </div>
+    </div>
+
+    <!-- Video Player -->
+    <div class="player-overlay" id="playerOverlay" onclick="closePlayer(event)">
+        <button class="player-close" onclick="closePlayer()">&times;</button>
+        <div class="player-content" onclick="event.stopPropagation()">
+            <div class="player-video" id="playerVideo"></div>
+            <div class="player-info">
+                <div class="player-title" id="playerTitle"></div>
+                <div class="player-desc" id="playerDesc"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toasts -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <script>
+        // Detect if Socket.IO is available (works locally, falls back on Vercel)
+        let socket = null;
+        let useHttpFallback = false;
+        try {
+            socket = io({ timeout: 3000 });
+            // If connection fails, switch to HTTP mode
+            socket.on('connect_error', () => {
+                console.log('Socket.IO unavailable, using HTTP fallback');
+                useHttpFallback = true;
+                socket = null;
+            });
+        } catch (e) {
+            useHttpFallback = true;
+        }
+
+        const searchInput = document.getElementById('searchInput');
+        const searchBtn = document.getElementById('searchBtn');
+        const resultsContainer = document.getElementById('resultsContainer');
+        const aiStatus = document.getElementById('aiStatus');
+        const voiceTranscript = document.getElementById('voiceTranscript');
+        const voiceBtn = document.getElementById('voiceBtn');
+        let currentQuery = '';
+        let recognition = null;
+        let isListening = false;
+
+        // --- Socket.IO handlers (only if available) ---
+        if (socket) {
+            socket.on('connect', () => {
+                console.log('Connected to AI Search Engine');
+            });
+
+            socket.on('connected', (data) => {
+                console.log('Engine status:', data.status);
+                updateStats(data.stats);
+            });
+        }
+
+        // HTTP fallback: load stats on page load
+        if (useHttpFallback) {
+            fetch('/api/stats').then(r => r.json()).then(stats => updateStats(stats)).catch(() => {});
+        }
+
+        if (socket) {
+            socket.on('search_started', (data) => {
+                currentQuery = data.query;
+                searchBtn.disabled = true;
+                searchBtn.textContent = 'Searching...';
+                aiStatus.innerHTML = '<div class="ai-thinking"><div class="ai-dot"></div>AI agents discovering videos...</div>';
+                resultsContainer.innerHTML = '';
+            });
+
+            socket.on('new_result', (data) => {
+                const result = data.result;
+                const empty = document.getElementById('emptyState');
+                if (empty) empty.remove();
+                appendResult(result);
+            });
+
+            socket.on('search_completed', (data) => {
+                if (searchTimeout) clearTimeout(searchTimeout);
+                searchBtn.disabled = false;
+                searchBtn.textContent = 'Search';
+                const discovered = data.discovered || 0;
+                aiStatus.innerHTML = `<div>Found ${data.total} results${discovered > 0 ? ' &middot; AI discovered ' + discovered + ' new' : ''}</div>`;
+                updateStats(data.stats);
+                if (isVoiceSearch) {
+                    speak(`Found ${data.total} videos about ${data.query}`);
+                    isVoiceSearch = false;
+                }
+            });
+
+            socket.on('search_error', (data) => {
+                if (searchTimeout) clearTimeout(searchTimeout);
+                searchBtn.disabled = false;
+                searchBtn.textContent = 'Search';
+                aiStatus.innerHTML = '';
+                showToast('error', 'Search Error', data.error);
+            });
+        }
+
+        if (socket) {
+            socket.on('stats', (stats) => updateStats(stats));
+
+            // Download events
+            socket.on('download_progress', (data) => {
+                handleDownloadProgress(data);
+            });
+
+            socket.on('download_complete', (data) => {
+                handleDownloadComplete(data);
+            });
+
+            socket.on('download_error', (data) => {
+                handleDownloadError(data);
+            });
+        }
+
+        // --- Search ---
+        let searchTimeout = null;
+        function doSearch() {
+            const query = searchInput.value.trim();
+            if (!query) return;
+            resultsContainer.innerHTML = '';
+            currentQuery = query;
+
+            // Clear any previous timeout
+            if (searchTimeout) clearTimeout(searchTimeout);
+
+            if (socket && !useHttpFallback && socket.connected) {
+                // Socket.IO mode (local) - streaming results
+                socket.emit('search_query', { query: query });
+
+                // Timeout after 45 seconds - tell user search is slow
+                searchTimeout = setTimeout(() => {
+                    if (searchBtn.disabled) {
+                        aiStatus.innerHTML = '<div>Search is taking longer than expected on the free tier. Try again or wait...</div>';
+                    }
+                }, 45000);
+            } else {
+                // HTTP fallback mode (Vercel) - get all results at once
+                searchBtn.disabled = true;
+                searchBtn.textContent = 'Searching...';
+                aiStatus.innerHTML = '<div class="ai-thinking"><div class="ai-dot"></div>AI agents discovering videos...</div>';
+
+                fetch('/api/search', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query: query })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) {
+                        searchBtn.disabled = false;
+                        searchBtn.textContent = 'Search';
+                        aiStatus.innerHTML = '';
+                        showToast('error', 'Search Error', data.error);
+                        return;
+                    }
+                    searchBtn.disabled = false;
+                    searchBtn.textContent = 'Search';
+                    const discovered = data.discovered || 0;
+                    aiStatus.innerHTML = `<div>Found ${data.total} results${discovered > 0 ? ' &middot; AI discovered ' + discovered + ' new' : ''}</div>`;
+                    updateStats(data.stats);
+
+                    // Remove empty state and show results
+                    const empty = document.getElementById('emptyState');
+                    if (empty) empty.remove();
+
+                    // Show results
+                    (data.results || []).forEach(result => {
+                        appendResult(result);
+                    });
+
+                    // Speak if voice search
+                    if (isVoiceSearch) {
+                        speak(`Found ${data.total} videos about ${data.query}`);
+                        isVoiceSearch = false;
+                    }
+                })
+                .catch(err => {
+                    searchBtn.disabled = false;
+                    searchBtn.textContent = 'Search';
+                    aiStatus.innerHTML = '';
+                    showToast('error', 'Search Error', 'Failed to connect to server');
+                });
+            }
+        }
+
+        // --- Results ---
+        function appendResult(result) {
+            const card = createVideoCard(result);
+            resultsContainer.appendChild(card);
+        }
+
+        function createVideoCard(result) {
+            const card = document.createElement('div');
+            card.className = 'video-card';
+            const cardId = 'card-' + Math.random().toString(36).substr(2, 9);
+            card.id = cardId;
+
+            const thumbHtml = result.thumbnail
+                ? `<img src="${result.thumbnail}" alt="${escapeHtml(result.title)}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div class="thumb-placeholder" style="display:none">&#9658;</div>`
+                : `<div class="thumb-placeholder">&#9658;</div>`;
+
+            const durationHtml = result.duration && result.duration !== 'Unknown'
+                ? `<div class="duration-badge">${escapeHtml(result.duration)}</div>` : '';
+
+            const score = result.score || result.relevance_score || 0;
+            const scoreHtml = score > 0
+                ? `<div class="relevance-score">Relevance: ${(score * 100).toFixed(0)}%</div>` : '';
+
+            card.innerHTML = `
+                <div class="thumb-wrapper" onclick="openPlayer('${escapeAttr(result.url)}', '${escapeAttr(result.title)}', '${escapeAttr(result.description || '')}')">
+                    ${thumbHtml}
+                    <div class="source-badge ${result.source || 'Unknown'}">${escapeHtml(result.source || 'Unknown')}</div>
+                    ${durationHtml}
+                </div>
+                <div class="card-body" onclick="openPlayer('${escapeAttr(result.url)}', '${escapeAttr(result.title)}', '${escapeAttr(result.description || '')}')">
+                    <div class="card-title">${escapeHtml(result.title)}</div>
+                    <div class="card-desc">${escapeHtml(result.description || '')}</div>
+                </div>
+                <div class="dl-progress" id="dlprog-${cardId}">
+                    <div class="dl-progress-bar"><div class="dl-progress-fill"></div></div>
+                    <div class="dl-progress-text">Preparing...</div>
+                </div>
+                <div class="card-footer">
+                    ${scoreHtml}
+                    <button class="download-btn" id="dlbtn-${cardId}" onclick="downloadVideo('${escapeAttr(result.url)}', '${escapeAttr(result.title)}', '${cardId}', this, event)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+                        Download
+                    </button>
+                </div>
+            `;
+
+            // Record click when card is clicked
+            card.addEventListener('click', (e) => {
+                if (e.target.closest('.download-btn') || e.target.closest('.dl-progress')) return;
+                socket.emit('record_click', {
+                    url: result.url,
+                    title: result.title,
+                    query: currentQuery,
+                });
+            });
+
+            return card;
+        }
+
+        // --- Video Player ---
+        function openPlayer(url, title, desc) {
+            const overlay = document.getElementById('playerOverlay');
+            const video = document.getElementById('playerVideo');
+            const titleEl = document.getElementById('playerTitle');
+            const descEl = document.getElementById('playerDesc');
+
+            let embed = '';
+            if (url.includes('youtube.com/watch?v=') || url.includes('youtu.be/')) {
+                const vid = url.match(/(?:watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+                if (vid) embed = `<iframe width="100%" height="100%" src="https://www.youtube.com/embed/${vid[1]}" frameborder="0" allowfullscreen></iframe>`;
+            } else if (url.includes('dailymotion.com/video/') || url.includes('dai.ly/')) {
+                const vid = url.match(/(?:video\/|dai\.ly\/)([a-zA-Z0-9]+)/);
+                if (vid) embed = `<iframe width="100%" height="100%" src="https://www.dailymotion.com/embed/video/${vid[1]}" frameborder="0" allowfullscreen></iframe>`;
+            } else if (url.includes('vimeo.com/')) {
+                const vid = url.match(/vimeo\.com\/(\d+)/);
+                if (vid) embed = `<iframe width="100%" height="100%" src="https://player.vimeo.com/video/${vid[1]}" frameborder="0" allowfullscreen></iframe>`;
+            } else {
+                embed = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#888">No inline player for this source.<br><a href="${url}" target="_blank" style="color:#6c5ce7">Open &rarr;</a></div>`;
+            }
+
+            video.innerHTML = embed;
+            titleEl.textContent = title;
+            descEl.textContent = desc;
+            overlay.classList.add('active');
+        }
+
+        function closePlayer(e) {
+            if (e && e.target.closest('.player-content')) return;
+            document.getElementById('playerOverlay').classList.remove('active');
+            document.getElementById('playerVideo').innerHTML = '';
+        }
+
+        // --- Download ---
+        function downloadVideo(url, title, cardId, btn, event) {
+            event.stopPropagation();
+            btn.disabled = true;
+            btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>Downloading...';
+            const progEl = document.getElementById('dlprog-' + cardId);
+            if (progEl) progEl.classList.add('active');
+            const toast = showToast('info', 'Downloading: ' + title, 'Preparing download...', { progress: true });
+            window._activeDownloads = window._activeDownloads || {};
+            window._activeDownloads[url] = { cardId, btn, progEl, toast };
+
+            if (socket && !useHttpFallback) {
+                // Socket.IO mode (local) - real-time progress
+                socket.emit('download_video', { url: url });
+            } else {
+                // HTTP fallback mode (Vercel) - no progress, just wait
+                if (progEl) {
+                    progEl.querySelector('.dl-progress-text').textContent = 'Downloading (no progress on Vercel)...';
+                }
+                fetch('/api/download', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: url })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) {
+                        handleDownloadError({ url: url, error: data.error });
+                    } else {
+                        handleDownloadComplete({ url: url, token: data.token, title: title });
+                    }
+                })
+                .catch(err => {
+                    handleDownloadError({ url: url, error: 'Failed to connect to server' });
+                });
+            }
+        }
+
+        function handleDownloadProgress(data) {
+            const dl = window._activeDownloads && window._activeDownloads[data.url];
+            if (!dl) return;
+            const pct = data.percent || 0;
+            if (dl.progEl) {
+                dl.progEl.querySelector('.dl-progress-fill').style.width = pct + '%';
+                const text = dl.progEl.querySelector('.dl-progress-text');
+                if (data.status === 'finished') {
+                    text.textContent = 'Processing...';
+                } else {
+                    let parts = [pct.toFixed(1) + '%'];
+                    if (data.total) parts.push(formatBytes(data.downloaded) + ' / ' + formatBytes(data.total));
+                    if (data.speed) parts.push(formatSpeed(data.speed));
+                    text.textContent = parts.join(' - ');
+                }
+            }
+            if (dl.toast) {
+                const fill = dl.toast.querySelector('.toast-progress-fill');
+                if (fill) fill.style.width = pct + '%';
+                const body = dl.toast.querySelector('.toast-body');
+                if (body && data.status !== 'finished') {
+                    let parts = [pct.toFixed(1) + '%'];
+                    if (data.speed) parts.push(formatSpeed(data.speed));
+                    body.textContent = parts.join(' - ');
+                }
+            }
+        }
+
+        function handleDownloadComplete(data) {
+            const dl = window._activeDownloads && window._activeDownloads[data.url];
+            if (dl) {
+                removeToast(dl.toast);
+                if (dl.progEl) {
+                    dl.progEl.querySelector('.dl-progress-fill').style.width = '100%';
+                    dl.progEl.querySelector('.dl-progress-text').textContent = 'Downloaded!';
+                }
+                if (dl.btn) {
+                    dl.btn.disabled = false;
+                    dl.btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>Download';
+                }
+                setTimeout(() => { if (dl.progEl) dl.progEl.classList.remove('active'); }, 3000);
+                delete window._activeDownloads[data.url];
+            }
+            if (data.token) {
+                const iframe = document.createElement('iframe');
+                iframe.style.display = 'none';
+                iframe.src = '/download_file/' + data.token;
+                document.body.appendChild(iframe);
+                setTimeout(() => document.body.removeChild(iframe), 60000);
+                showToast('success', 'Download complete', data.title || 'Video saved', { autoClose: 5000 });
+            }
+        }
+
+        function handleDownloadError(data) {
+            const dl = window._activeDownloads && window._activeDownloads[data.url];
+            if (dl) {
+                removeToast(dl.toast);
+                if (dl.btn) {
+                    dl.btn.disabled = false;
+                    dl.btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>Retry';
+                }
+                if (dl.progEl) {
+                    dl.progEl.querySelector('.dl-progress-text').textContent = 'Failed';
+                }
+                delete window._activeDownloads[data.url];
+            }
+            // Strip ANSI color codes from error
+            let errMsg = (data.error || 'Unknown error').replace(/\x1b\[[0-9;]*m/g, '');
+            showToast('error', 'Download failed', errMsg, { autoClose: 8000 });
+        }
+
+        // --- Voice Assistant ---
+        let isVoiceSearch = false;
+        let voiceBusy = false;
+
+        // The microphone is only available on a secure origin (https or localhost).
+        // On a LAN IP Chrome refuses it without prompting and reports "not-allowed".
+        function secureOriginHint() {
+            const host = location.hostname;
+            const isLocal = host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host.endsWith('.localhost');
+            if (window.isSecureContext || isLocal) return null;
+            const port = location.port ? ':' + location.port : '';
+            return 'The microphone only works over https or localhost. Open http://localhost' + port + ' instead of ' + location.host + '.';
+        }
+
+        const MIC_BLOCKED = 'Microphone access is blocked. Click the lock or microphone icon in the address bar, choose "Allow", then try again.';
+        const VOICE_ERRORS = {
+            'not-allowed': MIC_BLOCKED,
+            'service-not-allowed': 'Speech recognition is blocked for this page. Check the browser microphone permissions.',
+            'audio-capture': 'No microphone was found. Plug one in or check your sound settings.',
+            'no-speech': 'I did not hear anything. Try speaking again.',
+            'network': 'The speech recognition service is unreachable. Check your connection and try again.'
+        };
+
+        // Ask for the microphone before starting recognition so the browser shows
+        // its permission prompt; recognition.start() alone only fails with "not-allowed".
+        async function requestMicAccess() {
+            const hint = secureOriginHint();
+            if (hint) {
+                showToast('error', 'Microphone blocked', hint, { autoClose: 8000 });
+                return false;
+            }
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                showToast('error', 'Microphone blocked', 'This browser does not expose the microphone to the page.', { autoClose: 8000 });
+                return false;
+            }
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                stream.getTracks().forEach(track => track.stop());
+                return true;
+            } catch (err) {
+                const name = (err && err.name) || '';
+                let message = 'Could not start the microphone.';
+                if (name === 'NotAllowedError' || name === 'SecurityError') {
+                    message = MIC_BLOCKED;
+                } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+                    message = 'No microphone was found. Plug one in or check your sound settings.';
+                } else if (name === 'NotReadableError' || name === 'TrackStartError') {
+                    message = 'The microphone is in use by another app. Close it and try again.';
+                }
+                showToast('error', 'Microphone blocked', message, { autoClose: 8000 });
+                return false;
+            }
+        }
+
+        async function toggleVoice() {
+            if (isListening) {
+                if (recognition) recognition.stop();
+                return;
+            }
+            if (voiceBusy) return;
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRecognition) {
+                showToast('error', 'Voice not supported', 'Use Chrome or Edge to search by voice', { autoClose: 5000 });
+                return;
+            }
+            // Cancel any speech from previous search
+            if ('speechSynthesis' in window) speechSynthesis.cancel();
+
+            voiceBusy = true;
+            let granted = false;
+            try {
+                granted = await requestMicAccess();
+            } finally {
+                voiceBusy = false;
+            }
+            if (!granted) return;
+
+            recognition = new SpeechRecognition();
+            recognition.continuous = false;
+            recognition.interimResults = true;
+            recognition.lang = 'en-US';
+
+            recognition.onstart = () => {
+                isListening = true;
+                voiceBtn.classList.add('listening');
+                voiceTranscript.textContent = 'Listening...';
+            };
+
+            recognition.onresult = (event) => {
+                let transcript = '';
+                for (let i = 0; i < event.results.length; i++) {
+                    transcript += event.results[i][0].transcript;
+                }
+                voiceTranscript.textContent = '"' + transcript + '"';
+                if (event.results[event.results.length - 1].isFinal) {
+                    searchInput.value = transcript;
+                    isVoiceSearch = true;
+                    setTimeout(() => doSearch(), 500);
+                }
+            };
+
+            recognition.onerror = (event) => {
+                const code = event.error || '';
+                // 'aborted' also fires for a normal stop(); don't nag about it.
+                if (code === 'aborted') return;
+                showToast('error', 'Voice error', VOICE_ERRORS[code] || ('Voice search failed (' + (code || 'unknown') + ')'), { autoClose: 7000 });
+            };
+
+            recognition.onend = () => {
+                isListening = false;
+                voiceBtn.classList.remove('listening');
+                if (!searchInput.value) voiceTranscript.textContent = '';
+            };
+
+            try {
+                recognition.start();
+            } catch (e) {
+                // If start fails, create a fresh instance next time
+                recognition = null;
+                isListening = false;
+                voiceBtn.classList.remove('listening');
+                showToast('error', 'Voice error', 'Could not start voice search (' + ((e && e.message) || 'unknown error') + ')', { autoClose: 7000 });
+            }
+        }
+
+        let speechKeepAlive = null;
+        function speak(text) {
+            if (!('speechSynthesis' in window)) return;
+            // Cancel any existing speech first
+            speechSynthesis.cancel();
+            // Small delay needed for Chrome to process the cancel
+            setTimeout(() => {
+                const utterance = new SpeechSynthesisUtterance(text);
+                utterance.rate = 1.1;
+                utterance.pitch = 1.0;
+                utterance.volume = 1.0;
+                utterance.lang = 'en-US';
+
+                // Chrome bug: speech pauses after ~15s, keep it alive
+                if (speechKeepAlive) clearInterval(speechKeepAlive);
+                speechKeepAlive = setInterval(() => {
+                    if (speechSynthesis.speaking) {
+                        speechSynthesis.resume();
+                    } else {
+                        clearInterval(speechKeepAlive);
+                        speechKeepAlive = null;
+                    }
+                }, 10000);
+
+                utterance.onend = () => {
+                    if (speechKeepAlive) {
+                        clearInterval(speechKeepAlive);
+                        speechKeepAlive = null;
+                    }
+                };
+
+                utterance.onerror = () => {
+                    if (speechKeepAlive) {
+                        clearInterval(speechKeepAlive);
+                        speechKeepAlive = null;
+                    }
+                };
+
+                speechSynthesis.speak(utterance);
+            }, 100);
+        }
+
+        // --- Stats ---
+        function updateStats(stats) {
+            if (!stats) return;
+            document.getElementById('statVideos').textContent = stats.total_videos || 0;
+            document.getElementById('statSearches').textContent = stats.total_searches || 0;
+            document.getElementById('statClicks').textContent = stats.total_clicks || 0;
+        }
+
+        // --- Toast ---
+        function showToast(type, title, body, opts = {}) {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            toast.className = 'toast ' + type;
+            toast.innerHTML = `
+                <div class="toast-title">${escapeHtml(title)}</div>
+                <div class="toast-body">${escapeHtml(body)}</div>
+                ${opts.progress ? '<div class="toast-progress-bar"><div class="toast-progress-fill"></div></div>' : ''}
+            `;
+            container.appendChild(toast);
+            if (opts.autoClose) {
+                setTimeout(() => removeToast(toast), opts.autoClose);
+            }
+            return toast;
+        }
+
+        function removeToast(toast) {
+            if (toast && toast.parentNode) toast.parentNode.removeChild(toast);
+        }
+
+        // --- Utilities ---
+        function formatBytes(bytes) {
+            if (!bytes) return '0 B';
+            const units = ['B', 'KB', 'MB', 'GB'];
+            let i = 0;
+            while (bytes >= 1024 && i < units.length - 1) { bytes /= 1024; i++; }
+            return bytes.toFixed(1) + ' ' + units[i];
+        }
+
+        function formatSpeed(speed) {
+            if (!speed) return '';
+            return formatBytes(speed) + '/s';
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function escapeAttr(text) {
+            if (!text) return '';
+            return text.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+        }
+
+        // Focus search input on load
+        searchInput.focus();
+    </script>
+</body>
+</html>
