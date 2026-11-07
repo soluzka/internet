@@ -569,6 +569,12 @@
                             total_clicks: data.clicks || 0,
                         };
                         return videoIndex;
+                    })
+                    .catch(err => {
+                        // Do not cache the failure: the next search should try
+                        // again instead of repeating this error forever.
+                        indexRequest = null;
+                        throw err;
                     });
             }
             return indexRequest;
@@ -619,11 +625,26 @@
         }
 
         try {
-            socket = io({ timeout: 10000, reconnection: false });
+            // Reconnect a few times: a server restart used to leave the page
+            // stranded in bundled-index mode for as long as the tab stayed open.
+            socket = io({
+                timeout: 10000,
+                reconnection: true,
+                reconnectionAttempts: 5,
+                reconnectionDelay: 1500,
+            });
             // First failure switches to the bundled index for good, so a static
             // host does not get hammered with /socket.io requests.
+            // A restart makes the first attempts fail; only give up on the
+            // server after a few, so a brief outage does not strand the page.
+            let connectErrors = 0;
             socket.on('connect_error', () => {
                 if (useHttpFallback) return;
+                connectErrors += 1;
+                if (connectErrors < 3) {
+                    console.log('Socket.IO not reachable yet, retrying');
+                    return;
+                }
                 console.log('Socket.IO unavailable, using bundled index');
                 useHttpFallback = true;
                 try { socket.disconnect(); } catch (err) {}
