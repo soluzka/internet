@@ -208,14 +208,19 @@ class MLDatabase:
             return 0
         return int(np.count_nonzero(sims > 0))
 
-    def search(self, query: str, limit: int = 50) -> List[Dict]:
-        """Search the database using ML (TF-IDF + LSA + cosine similarity)."""
+    def search(self, query: str, limit: int = None) -> List[Dict]:
+        """Search the database using ML (TF-IDF + LSA + cosine similarity).
+
+        Returns every matching video; pass a limit only to ask for a subset.
+        """
         sims = self.similarities(query)
         if sims is None:
             return []
 
-        # Get top results
-        top_indices = np.argsort(sims)[::-1][:limit * 2]
+        # Most similar first; capped only when the caller asks for a limit
+        top_indices = np.argsort(sims)[::-1]
+        if limit:
+            top_indices = top_indices[:limit * 2]
 
         conn = sqlite3.connect(self.db_path)
         results = []
@@ -240,7 +245,7 @@ class MLDatabase:
                     'score': float(sims[idx]),
                     'click_count': row[7],
                 })
-            if len(results) >= limit:
+            if limit and len(results) >= limit:
                 break
         conn.close()
         return results
@@ -1037,7 +1042,7 @@ class RankingAgent:
             return []
 
         # Get ML scores from database
-        ml_results = self.database.search(query, limit=100)
+        ml_results = self.database.search(query)
         ml_scores = {r['url']: r['score'] for r in ml_results}
 
         # Apply learned preferences (click boost)
@@ -1230,7 +1235,7 @@ def setup_routes(app, socketio):
                 })
             else:
                 # FULL MODE (local): ML search + discovery + ranking
-                db_results = database.search(query, limit=50)
+                db_results = database.search(query)
                 streamed = set()
                 for r in db_results:
                     streamed.add(r['url'])
@@ -1258,7 +1263,7 @@ def setup_routes(app, socketio):
                     loop.close()
 
                 database.rebuild()
-                all_results = database.search(query, limit=100)
+                all_results = database.search(query)
                 ranked = ranking_agent.rank(query, all_results)
 
                 # Send the ranked results the earlier stream did not include
@@ -1433,7 +1438,7 @@ def setup_routes(app, socketio):
                 })
             else:
                 # FULL MODE: ML search + discovery + ranking
-                db_results = database.search(query, limit=50)
+                db_results = database.search(query)
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 try:
@@ -1444,7 +1449,7 @@ def setup_routes(app, socketio):
                     loop.close()
 
                 database.rebuild()
-                all_results = database.search(query, limit=100)
+                all_results = database.search(query)
                 ranked = ranking_agent.rank(query, all_results)
 
                 conn = sqlite3.connect(database.db_path)

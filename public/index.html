@@ -516,7 +516,7 @@
         }
 
         // Keyword scoring over the bundled index: title beats tags beats description.
-        function localSearch(query, limit) {
+        function localSearch(query, limit = Infinity) {
             const terms = tokenize(query);
             if (!terms.length || !videoIndex) return [];
             const scored = [];
@@ -691,21 +691,18 @@
 
                 loadIndex()
                 .then(() => {
-                    const found = localSearch(query, 500);
+                    const found = localSearch(query);
                     const results = found.results;
                     searchBtn.disabled = false;
                     searchBtn.textContent = 'Search';
-                    const shownNote = results.length < found.total ? ` &middot; showing ${results.length}` : '';
-                    aiStatus.innerHTML = `<div>Found ${found.total} ${found.total === 1 ? 'match' : 'matches'}${shownNote}</div>`;
+                    aiStatus.innerHTML = `<div>Found ${found.total} ${found.total === 1 ? 'match' : 'matches'}</div>`;
                     updateStats(indexStats);
 
                     // Remove empty state and show results
                     const empty = document.getElementById('emptyState');
                     if (empty) empty.remove();
 
-                    results.forEach(result => {
-                        appendResult(result);
-                    });
+                    appendResults(results);
 
                     if (!results.length) {
                         resultsContainer.innerHTML = '<div class="empty-state"><h2>No matches</h2><p>Try a different keyword.</p></div>';
@@ -727,6 +724,23 @@
         }
 
         // --- Results ---
+        // A broad query can match the whole library, so cards are added in
+        // batches: no cap, but the page keeps painting while they arrive.
+        function appendResults(results) {
+            const CHUNK = 60;
+            let index = 0;
+            function step() {
+                const end = Math.min(index + CHUNK, results.length);
+                const fragment = document.createDocumentFragment();
+                for (; index < end; index++) {
+                    fragment.appendChild(createVideoCard(results[index]));
+                }
+                resultsContainer.appendChild(fragment);
+                if (index < results.length) requestAnimationFrame(step);
+            }
+            step();
+        }
+
         function appendResult(result) {
             const card = createVideoCard(result);
             resultsContainer.appendChild(card);
