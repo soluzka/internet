@@ -61,11 +61,13 @@
         .header-stats {
             margin-left: auto;
             display: flex;
+            flex-wrap: wrap;
+            justify-content: flex-end;
             gap: 16px;
             font-size: 13px;
             color: var(--text-dim);
         }
-        .stat-item { display: flex; align-items: center; gap: 6px; }
+        .stat-item { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
         .stat-value { color: var(--accent2); font-weight: 600; }
 
         /* Search section */
@@ -151,6 +153,18 @@
             font-size: 13px;
             color: var(--text-dim);
             min-height: 24px;
+        }
+        /* Results summary: the match count is the headline, library size is a note */
+        .results-summary { text-align: center; line-height: 1.6; }
+        .results-summary .match-count {
+            color: var(--text);
+            font-size: 15px;
+            font-weight: 600;
+        }
+        .results-summary .summary-meta {
+            display: block;
+            color: var(--text-dim);
+            font-size: 12px;
         }
         .ai-thinking { display: flex; align-items: center; gap: 6px; }
         .ai-dot {
@@ -431,10 +445,10 @@
             <div class="logo-icon">AI</div>
             <span class="logo-text">Video Search Engine</span>
         </div>
-        <div class="header-stats" id="headerStats">
-            <div class="stat-item">Videos: <span class="stat-value" id="statVideos">0</span></div>
-            <div class="stat-item">Searches: <span class="stat-value" id="statSearches">0</span></div>
-            <div class="stat-item">Clicks: <span class="stat-value" id="statClicks">0</span></div>
+        <div class="header-stats" id="headerStats" title="Totals for the whole indexed library, not for the current search">
+            <div class="stat-item">Library videos: <span class="stat-value" id="statVideos">0</span></div>
+            <div class="stat-item">Searches run: <span class="stat-value" id="statSearches">0</span></div>
+            <div class="stat-item">Clicks recorded: <span class="stat-value" id="statClicks">0</span></div>
         </div>
     </div>
 
@@ -624,11 +638,10 @@
                 const rendered = resultsContainer.querySelectorAll('.video-card').length;
                 const shown = rendered || data.shown || data.total;
                 const library = (data.stats && data.stats.total_videos) || 0;
-                const parts = [`Found ${data.total} ${data.total === 1 ? 'match' : 'matches'}`];
-                if (library && library !== data.total) parts.push(`in ${library} videos`);
-                if (shown < data.total) parts.push(`showing ${shown}`);
-                if (discovered > 0) parts.push(`AI discovered ${discovered} new`);
-                aiStatus.innerHTML = `<div>${parts.join(' &middot; ')}</div>`;
+                const extras = [];
+                if (shown < data.total) extras.push(`showing ${shown}`);
+                if (discovered > 0) extras.push(`AI discovered ${discovered} new`);
+                aiStatus.innerHTML = renderSummary(data.query, data.total, library, extras);
                 updateStats(data.stats);
                 if (isVoiceSearch) {
                     speak(`Found ${data.total} videos about ${data.query}`);
@@ -695,7 +708,7 @@
                     const results = found.results;
                     searchBtn.disabled = false;
                     searchBtn.textContent = 'Search';
-                    aiStatus.innerHTML = `<div>Found ${found.total} ${found.total === 1 ? 'match' : 'matches'}</div>`;
+                    aiStatus.innerHTML = renderSummary(query, found.total, indexStats.total_videos, []);
                     updateStats(indexStats);
 
                     // Remove empty state and show results
@@ -724,6 +737,24 @@
         }
 
         // --- Results ---
+        // One place decides how a search is described, so the number of matches
+        // is never confused with how many videos the library holds.
+        function renderSummary(query, total, library, extras = []) {
+            const count = Number(total) || 0;
+            const label = count === 1 ? 'match' : 'matches';
+            const queryNote = query ? ` for &ldquo;${escapeHtml(query)}&rdquo;` : '';
+            const libraryNote = library
+                ? `Library holds ${Number(library).toLocaleString()} indexed videos`
+                : '';
+            const extraNote = extras.length ? extras.join(' &middot; ') : '';
+            const notes = [extraNote, libraryNote].filter(Boolean).join(' &middot; ');
+            return `
+                <div class="results-summary">
+                    <span class="match-count">${count.toLocaleString()} ${label}${queryNote}</span>
+                    ${notes ? `<span class="summary-meta">${notes}</span>` : ''}
+                </div>`;
+        }
+
         // A broad query can match the whole library, so cards are added in
         // batches: no cap, but the page keeps painting while they arrive.
         function appendResults(results) {
@@ -1215,9 +1246,10 @@
         // --- Stats ---
         function updateStats(stats) {
             if (!stats) return;
-            document.getElementById('statVideos').textContent = stats.total_videos || 0;
-            document.getElementById('statSearches').textContent = stats.total_searches || 0;
-            document.getElementById('statClicks').textContent = stats.total_clicks || 0;
+            const format = (value) => (Number(value) || 0).toLocaleString();
+            document.getElementById('statVideos').textContent = format(stats.total_videos);
+            document.getElementById('statSearches').textContent = format(stats.total_searches);
+            document.getElementById('statClicks').textContent = format(stats.total_clicks);
         }
 
         // --- Toast ---
