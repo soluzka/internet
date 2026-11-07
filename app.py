@@ -202,6 +202,16 @@ def api_transcribe():
                 pass
 
 
+@app.after_request
+def no_cache_for_pages(response):
+    """The page and its data change with every release: never let the browser
+    hold an old index.html that speaks a different Socket.IO protocol."""
+    if response.mimetype in ('text/html', 'application/json'):
+        response.headers['Cache-Control'] = 'no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+    return response
+
+
 @app.route('/')
 def index():
     try:

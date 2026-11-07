@@ -107,6 +107,7 @@ class MLDatabase:
         )
         self.tfidf_matrix = None
         self.video_ids = []
+        self.documents = []
         self.svd = None
         self.svd_matrix = None
         self._rebuild_index()
@@ -131,6 +132,7 @@ class MLDatabase:
             logger.info("No videos in database yet, index empty")
             self.tfidf_matrix = None
             self.video_ids = []
+            self.documents = []
             return
 
         self.video_ids = [r[0] for r in rows]
@@ -138,6 +140,11 @@ class MLDatabase:
         for r in rows:
             doc = f"{r[1] or ''} {r[2] or ''} {r[3] or ''}"
             documents.append(doc)
+
+        # Kept for deciding what actually matches. Ranking uses the ML scores,
+        # but "is this a match" has to be a fact, not a similarity threshold
+        # that swings every time the index is rebuilt.
+        self.documents = [doc.lower() for doc in documents]
 
         self.tfidf_matrix = self.vectorizer.fit_transform(documents)
 
@@ -202,12 +209,25 @@ class MLDatabase:
                 logger.warning(f'SVD search failed, using TF-IDF only: {e}')
         return sims
 
+    def match_mask(self, query: str) -> Optional[np.ndarray]:
+        """Boolean mask of videos whose text contains at least one query term."""
+        terms = [t for t in re.findall(r"[a-z0-9']+", (query or '').lower()) if len(t) > 1]
+        if not terms or not self.documents:
+            return None
+        mask = np.zeros(len(self.documents), dtype=bool)
+        for index, doc in enumerate(self.documents):
+            for term in terms:
+                if term in doc:
+                    mask[index] = True
+                    break
+        return mask
+
     def count_matches(self, query: str) -> int:
         """How many videos actually match, ignoring any result limit."""
-        sims = self.similarities(query)
-        if sims is None:
+        mask = self.match_mask(query)
+        if mask is None:
             return 0
-        return int(np.count_nonzero(sims > 0))
+        return int(np.count_nonzero(mask))
 
     def search(self, query: str, limit: int = None) -> List[Dict]:
         """Search the database using ML (TF-IDF + LSA + cosine similarity).
@@ -218,16 +238,21 @@ class MLDatabase:
         if sims is None:
             return []
 
-        # Most similar first; capped only when the caller asks for a limit
-        top_indices = np.argsort(sims)[::-1]
+        # Only videos that actually contain the query terms count as matches;
+        # the ML score decides their order, not whether they belong.
+        mask = self.match_mask(query)
+        if mask is None:
+            return []
+        top_indices = np.flatnonzero(mask)
+        if top_indices.size == 0:
+            return []
+        top_indices = top_indices[np.argsort(sims[top_indices])[::-1]]
         if limit:
-            top_indices = top_indices[:limit * 2]
+            top_indices = top_indices[:limit]
 
         conn = sqlite3.connect(self.db_path)
         results = []
         for idx in top_indices:
-            if sims[idx] <= 0:
-                continue
             vid_id = self.video_ids[idx]
             row = conn.execute(
                 """SELECT url, title, description, thumbnail, duration, source, platform, click_count
@@ -243,7 +268,7 @@ class MLDatabase:
                     'source': row[5] or 'Unknown',
                     'platform': row[6] or 'Unknown',
                     'type': 'video',
-                    'score': float(sims[idx]),
+                    'score': max(float(sims[idx]), 0.0),
                     'click_count': row[7],
                 })
             if limit and len(results) >= limit:
@@ -1248,6 +1273,17 @@ def setup_routes(app, socketio):
     # Incremented per search so a newer search can silence the one before it.
     search_state = {'token': 0}
 
+    # Which results protocol each connected page speaks. Pages before batch
+    # support get one event per result, so a cached page is never left blank.
+    client_protocols = {}
+
+    @socketio.on('client_protocol')
+    def handle_client_protocol(data):
+        try:
+            client_protocols[request.sid] = int((data or {}).get('version') or 1)
+        except (TypeError, ValueError):
+            client_protocols[request.sid] = 1
+
     def _run_discovery(query: str, token: int) -> None:
         """Scrape for a query in the background and report what turned up."""
         try:
@@ -1324,6 +1360,7 @@ def setup_routes(app, socketio):
     @socketio.on('disconnect')
     def handle_disconnect():
         logger.info('Client disconnected')
+        client_protocols.pop(request.sid, None)
 
     @socketio.on('search_query')
     def handle_search_query(data):
@@ -1398,16 +1435,23 @@ def setup_routes(app, socketio):
 
                 # Send matches in batches. One event per result floods the socket
                 # (hundreds of frames), and dropped frames looked like a cap.
-                batch_size = 200
-                for start in range(0, len(ranked), batch_size):
-                    if token != search_state['token']:
-                        logger.info('Search %r superseded; stopping its results', query)
-                        return
-                    emit('search_results', {
-                        'query': query,
-                        'token': token,
-                        'results': ranked[start:start + batch_size],
-                    })
+                if client_protocols.get(request.sid, 1) >= 2:
+                    batch_size = 200
+                    for start in range(0, len(ranked), batch_size):
+                        if token != search_state['token']:
+                            logger.info('Search %r superseded; stopping its results', query)
+                            return
+                        emit('search_results', {
+                            'query': query,
+                            'token': token,
+                            'results': ranked[start:start + batch_size],
+                        })
+                else:
+                    # Older page: it only knows one-result-per-event.
+                    for r in ranked:
+                        if token != search_state['token']:
+                            return
+                        emit('new_result', {'result': r})
 
                 total_matches = database.count_matches(query)
 

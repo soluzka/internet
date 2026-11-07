@@ -648,6 +648,8 @@
         if (socket) {
             socket.on('connect', () => {
                 console.log('Connected to AI Search Engine');
+                // Tell the server this page understands batched results.
+                socket.emit('client_protocol', { version: 2 });
             });
 
             socket.on('connected', (data) => {
