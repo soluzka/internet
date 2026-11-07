@@ -1239,12 +1239,16 @@ def setup_routes(app, socketio):
     # so a search that died without clearing it cannot block the app forever.
     search_started_at = 0.0
 
-    # Background discovery: one thread per query at a time, so answering a
-    # search never waits for scraping and repeats do not hammer the same sites.
-    discovery_threads = {}
+    # Background discovery runs from ONE worker so a burst of searches cannot
+    # saturate the CPU with parallel scrapes and make the whole app unresponsive.
+    discovery_queue = []
     discovery_lock = threading.Lock()
+    discovery_worker = {'thread': None}
 
-    def _run_discovery(query: str) -> None:
+    # Incremented per search so a newer search can silence the one before it.
+    search_state = {'token': 0}
+
+    def _run_discovery(query: str, token: int) -> None:
         """Scrape for a query in the background and report what turned up."""
         try:
             loop = asyncio.new_event_loop()
@@ -1265,6 +1269,10 @@ def setup_routes(app, socketio):
             logger.error('Discovery failed for %r: %s', query, exc)
             return
 
+        if token != search_state['token']:
+            logger.info('Dropping discovery report for superseded search %r', query)
+            return
+
         try:
             database.rebuild()
             new_urls = set(getattr(discovery_agent, 'last_added_urls', set()))
@@ -1282,14 +1290,26 @@ def setup_routes(app, socketio):
         except Exception as exc:
             logger.error('Discovery reporting failed for %r: %s', query, exc)
 
-    def start_background_discovery(query: str) -> None:
+    def _discovery_worker_loop() -> None:
+        while True:
+            with discovery_lock:
+                if not discovery_queue:
+                    discovery_worker['thread'] = None
+                    return
+                query, token = discovery_queue.pop(0)
+            _run_discovery(query, token)
+
+    def start_background_discovery(query: str, token: int) -> None:
         with discovery_lock:
-            running = discovery_threads.get(query)
-            if running and running.is_alive():
-                logger.info('Discovery already running for %r', query)
+            if any(item[0] == query for item in discovery_queue):
+                logger.info('Discovery already queued for %r', query)
                 return
-            thread = threading.Thread(target=_run_discovery, args=(query,), daemon=True)
-            discovery_threads[query] = thread
+            discovery_queue.append((query, token))
+            worker = discovery_worker.get('thread')
+            if worker and worker.is_alive():
+                return
+            thread = threading.Thread(target=_discovery_worker_loop, daemon=True)
+            discovery_worker['thread'] = thread
             thread.start()
 
     @socketio.on('connect')
@@ -1330,8 +1350,10 @@ def setup_routes(app, socketio):
             )
 
         search_started_at = now
+        search_state['token'] += 1
+        token = search_state['token']
         try:
-            emit('search_started', {'query': query})
+            emit('search_started', {'query': query, 'token': token})
             is_render = os.environ.get('RENDER')
 
             if is_render:
@@ -1373,8 +1395,19 @@ def setup_routes(app, socketio):
                 # is slow and used to hold the whole search hostage; it now runs
                 # in the background and reports back when it finds something.
                 ranked = ranking_agent.rank(query, database.search(query))
-                for r in ranked:
-                    emit('new_result', {'result': r})
+
+                # Send matches in batches. One event per result floods the socket
+                # (hundreds of frames), and dropped frames looked like a cap.
+                batch_size = 200
+                for start in range(0, len(ranked), batch_size):
+                    if token != search_state['token']:
+                        logger.info('Search %r superseded; stopping its results', query)
+                        return
+                    emit('search_results', {
+                        'query': query,
+                        'token': token,
+                        'results': ranked[start:start + batch_size],
+                    })
 
                 total_matches = database.count_matches(query)
 
@@ -1396,7 +1429,7 @@ def setup_routes(app, socketio):
                     'stats': database.get_stats(),
                 })
 
-                start_background_discovery(query)
+                start_background_discovery(query, token)
         except Exception as e:
             logger.error(f'Search error: {str(e)}')
             emit('search_error', {'error': str(e)})

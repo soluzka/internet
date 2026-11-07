@@ -664,6 +664,7 @@
         if (socket) {
             socket.on('search_started', (data) => {
                 currentQuery = data.query;
+                activeSearchToken = data.token || 0;
                 searchBtn.disabled = true;
                 searchBtn.textContent = 'Searching...';
                 aiStatus.innerHTML = '<div class="ai-thinking"><div class="ai-dot"></div>AI agents discovering videos...</div>';
@@ -675,6 +676,19 @@
                 const empty = document.getElementById('emptyState');
                 if (empty) empty.remove();
                 appendResult(result);
+            });
+
+            // Matches arrive in batches: one socket frame per 200 results.
+            // Anything from an older search is dropped, so a new search never
+            // has the previous one's results mixed in.
+            socket.on('search_results', (data) => {
+                if (!data || data.query !== currentQuery) return;
+                if (data.token && data.token !== activeSearchToken) return;
+                const batch = (data && data.results) || [];
+                if (!batch.length) return;
+                const empty = document.getElementById('emptyState');
+                if (empty) empty.remove();
+                appendResults(batch);
             });
 
             socket.on('search_completed', (data) => {
@@ -747,6 +761,7 @@
 
         // --- Search ---
         let searchTimeout = null;
+        let activeSearchToken = 0;
         function doSearch() {
             const query = searchInput.value.trim();
             if (!query) return;
@@ -760,12 +775,15 @@
                 // Socket.IO mode (local) - streaming results
                 socket.emit('search_query', { query: query });
 
-                // Timeout after 45 seconds - tell user search is slow
+                // Never leave the button stuck on "Searching...". If the
+                // completion event is slow or lost, hand control back.
                 searchTimeout = setTimeout(() => {
                     if (searchBtn.disabled) {
-                        aiStatus.innerHTML = '<div>Search is taking longer than expected on the free tier. Try again or wait...</div>';
+                        searchBtn.disabled = false;
+                        searchBtn.textContent = 'Search';
+                        aiStatus.innerHTML = '<div>Still searching in the background &mdash; results appear as they arrive.</div>';
                     }
-                }, 45000);
+                }, 15000);
             } else {
                 // No backend: search the bundled index in the browser
                 searchBtn.disabled = true;
