@@ -179,10 +179,10 @@ class MLDatabase:
             conn.close()
         return changed
 
-    def search(self, query: str, limit: int = 50) -> List[Dict]:
-        """Search the database using ML (TF-IDF + LSA + cosine similarity)."""
+    def similarities(self, query: str) -> Optional[np.ndarray]:
+        """Similarity score of every indexed video for a query."""
         if self.tfidf_matrix is None or not self.video_ids:
-            return []
+            return None
 
         # Transform query into TF-IDF space
         query_vec = self.vectorizer.transform([query])
@@ -199,6 +199,20 @@ class MLDatabase:
                 sims = 0.7 * sims + 0.3 * svd_sims
             except Exception as e:
                 logger.warning(f'SVD search failed, using TF-IDF only: {e}')
+        return sims
+
+    def count_matches(self, query: str) -> int:
+        """How many videos actually match, ignoring any result limit."""
+        sims = self.similarities(query)
+        if sims is None:
+            return 0
+        return int(np.count_nonzero(sims > 0))
+
+    def search(self, query: str, limit: int = 50) -> List[Dict]:
+        """Search the database using ML (TF-IDF + LSA + cosine similarity)."""
+        sims = self.similarities(query)
+        if sims is None:
+            return []
 
         # Get top results
         top_indices = np.argsort(sims)[::-1][:limit * 2]
@@ -1217,21 +1231,44 @@ def setup_routes(app, socketio):
             else:
                 # FULL MODE (local): ML search + discovery + ranking
                 db_results = database.search(query, limit=50)
+                streamed = set()
                 for r in db_results:
+                    streamed.add(r['url'])
                     emit('new_result', {'result': r})
 
+                discovery_timeout = float(os.environ.get('DISCOVERY_TIMEOUT', 40))
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 try:
+                    # No socket passed in: discovery must not stream every raw
+                    # hit to the page. Only the ranked results below are sent.
                     added = loop.run_until_complete(
-                        discovery_agent.discover(query, socketio)
+                        asyncio.wait_for(
+                            discovery_agent.discover(query, socketio=None),
+                            timeout=discovery_timeout,
+                        )
                     )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        f'Discovery timed out after {discovery_timeout}s; '
+                        'answering from the local index'
+                    )
+                    added = 0
                 finally:
                     loop.close()
 
                 database.rebuild()
                 all_results = database.search(query, limit=100)
                 ranked = ranking_agent.rank(query, all_results)
+
+                # Send the ranked results the earlier stream did not include
+                for r in ranked:
+                    if r['url'] not in streamed:
+                        streamed.add(r['url'])
+                        emit('new_result', {'result': r})
+
+                # Real number of matches, not the 100-result display cap
+                total_matches = database.count_matches(query)
 
                 conn = sqlite3.connect(database.db_path)
                 conn.execute(
@@ -1243,7 +1280,8 @@ def setup_routes(app, socketio):
 
                 emit('search_completed', {
                     'query': query,
-                    'total': len(ranked),
+                    'total': total_matches,
+                    'shown': len(streamed),
                     'discovered': added,
                     'stats': database.get_stats(),
                 })
@@ -1419,7 +1457,8 @@ def setup_routes(app, socketio):
 
                 return jsonify({
                     'query': query,
-                    'total': len(ranked),
+                    'total': database.count_matches(query),
+                    'shown': len(ranked),
                     'discovered': discovered,
                     'results': ranked,
                     'stats': database.get_stats(),

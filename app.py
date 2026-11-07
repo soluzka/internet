@@ -237,7 +237,9 @@ setup_routes(app, socketio)
 
 if __name__ == '__main__':
     logger.info("Starting Flask-SocketIO server...")
-    port = int(os.environ.get('PORT', 5001))
+    # PORT=0 (inherited from some launchers) would pick a random port and make
+    # the server unreachable at the usual address, so fall back to 5001.
+    port = int(os.environ.get('PORT') or 5001) or 5001
     logger.info(f"Server will run on port {port}")
     socketio.run(
         app,
