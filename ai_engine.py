@@ -308,6 +308,22 @@ BROWSER_HEADERS = {
 # Shorter timeout on Render's free tier for faster response
 REQUEST_TIMEOUT = 8 if os.environ.get('RENDER') else 15
 
+
+def _env_int(name: str, default: int, minimum: int) -> int:
+    """Read a positive int from the environment, falling back on bad input."""
+    try:
+        return max(minimum, int(os.environ.get(name, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+# How deep each source pages during discovery. Deeper paging is what makes the
+# index grow toward what you actually search for, at the cost of slower
+# searches; override with SCRAPE_DEPTH / DAILYMOTION_DEPTH when needed.
+SCRAPE_DEPTH = _env_int('SCRAPE_DEPTH', 200, 25)
+DAILYMOTION_DEPTH = _env_int('DAILYMOTION_DEPTH', 200, 50)
+DISCOVERY_TIMEOUT_DEFAULT = float(os.environ.get('DISCOVERY_TIMEOUT', 75))
+
 # Supported video URL patterns for extraction
 VIDEO_URL_PATTERNS = [
     r'https?://(?:www\.)?youtube\.com/watch\?v=[a-zA-Z0-9_-]{11}',
@@ -495,7 +511,7 @@ class VideoScraper:
 
             seen = set()
             for i, vid_id in enumerate(video_ids):
-                if vid_id in seen or len(results) >= 75:
+                if vid_id in seen or len(results) >= SCRAPE_DEPTH:
                     continue
                 seen.add(vid_id)
 
@@ -539,7 +555,7 @@ class VideoScraper:
 
             seen = set()
             for i, vid_id in enumerate(video_ids):
-                if vid_id in seen or len(results) >= 50:
+                if vid_id in seen or len(results) >= SCRAPE_DEPTH:
                     continue
                 seen.add(vid_id)
 
@@ -564,20 +580,39 @@ class VideoScraper:
         return results
 
     async def _search_dailymotion(self, query: str, socketio=None) -> List[Dict]:
-        """Search Dailymotion for videos using their public JSON API."""
+        """Search Dailymotion for videos using their public JSON API.
+
+        Pages 100 results at a time until DAILYMOTION_DEPTH is reached.
+        """
         results = []
+        page_size = 100
         try:
-            api_url = f'https://api.dailymotion.com/videos?search={quote(query)}&limit=50&fields=id,title,description,thumbnail_url,duration'
-            logger.info(f'Dailymotion API: {api_url}')
+            import json as _json
 
             async with aiohttp.ClientSession() as session:
-                async with session.get(api_url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)) as response:
-                    if response.status != 200:
-                        return results
-                    text = await response.text()
-                    import json as _json
-                    data = _json.loads(text)
+                for page in range(1, DAILYMOTION_DEPTH // page_size + 2):
+                    if len(results) >= DAILYMOTION_DEPTH:
+                        break
+
+                    api_url = (
+                        'https://api.dailymotion.com/videos?search=' + quote(query)
+                        + f'&limit={page_size}&page={page}'
+                        + '&fields=id,title,description,thumbnail_url,duration'
+                    )
+                    logger.info(f'Dailymotion API page {page}: {api_url}')
+
+                    async with session.get(
+                        api_url,
+                        headers=self.headers,
+                        timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT),
+                    ) as response:
+                        if response.status != 200:
+                            break
+                        data = _json.loads(await response.text())
+
                     videos = data.get('list', [])
+                    if not videos:
+                        break
 
                     for v in videos:
                         vid_id = v.get('id', '')
@@ -602,6 +637,9 @@ class VideoScraper:
                         if socketio:
                             socketio.emit('new_result', {'result': results[-1]})
 
+                    if len(videos) < page_size:
+                        break
+
         except Exception as e:
             logger.error(f'Dailymotion search error: {e}')
         return results
@@ -610,8 +648,8 @@ class VideoScraper:
         """Search Bing Video Search - finds videos across ALL platforms (YouTube, TikTok, Dailymotion, etc.)."""
         results = []
         try:
-            for offset in range(0, 75, 25):
-                if len(results) >= 75:
+            for offset in range(0, SCRAPE_DEPTH, 25):
+                if len(results) >= SCRAPE_DEPTH:
                     break
 
                 search_url = f'https://www.bing.com/videos/search?q={quote(query)}&first={offset}'
@@ -632,7 +670,7 @@ class VideoScraper:
 
                 for element in video_elements:
                     try:
-                        if len(results) >= 75:
+                        if len(results) >= SCRAPE_DEPTH:
                             break
 
                         # Get title
@@ -690,8 +728,8 @@ class VideoScraper:
         """Search Bing UK Video Search - more results from all platforms."""
         results = []
         try:
-            for offset in range(0, 75, 25):
-                if len(results) >= 75:
+            for offset in range(0, SCRAPE_DEPTH, 25):
+                if len(results) >= SCRAPE_DEPTH:
                     break
 
                 search_url = f'https://www.bing.co.uk/videos/search?q={quote(query)}&first={offset}'
@@ -709,7 +747,7 @@ class VideoScraper:
 
                 for element in video_elements:
                     try:
-                        if len(results) >= 75:
+                        if len(results) >= SCRAPE_DEPTH:
                             break
 
                         title_elems = element.xpath('.//*[contains(@class, "mc_vtvc_title")]')
@@ -761,8 +799,8 @@ class VideoScraper:
         """Search Bing Web Search - finds Reddit, websites, articles, and videos across all platforms."""
         results = []
         try:
-            for offset in range(0, 100, 25):
-                if len(results) >= 75:
+            for offset in range(0, SCRAPE_DEPTH, 25):
+                if len(results) >= SCRAPE_DEPTH:
                     break
 
                 search_url = f'https://www.bing.com/search?q={quote(query)}&first={offset}'
@@ -781,7 +819,7 @@ class VideoScraper:
 
                 for item in result_items:
                     try:
-                        if len(results) >= 75:
+                        if len(results) >= SCRAPE_DEPTH:
                             break
 
                         # Get the link from h2 > a
@@ -839,8 +877,8 @@ class VideoScraper:
         """Search Bing UK Web Search - more Reddit, websites, articles."""
         results = []
         try:
-            for offset in range(0, 100, 25):
-                if len(results) >= 75:
+            for offset in range(0, SCRAPE_DEPTH, 25):
+                if len(results) >= SCRAPE_DEPTH:
                     break
 
                 search_url = f'https://www.bing.co.uk/search?q={quote(query)}&first={offset}'
@@ -858,7 +896,7 @@ class VideoScraper:
 
                 for item in result_items:
                     try:
-                        if len(results) >= 75:
+                        if len(results) >= SCRAPE_DEPTH:
                             break
 
                         h2_links = item.xpath('.//h2//a/@href | .//h2/a/@href')
@@ -913,8 +951,8 @@ class VideoScraper:
         """Search DuckDuckGo HTML search - finds Reddit, forums, websites."""
         results = []
         try:
-            for offset in [0, 30]:
-                if len(results) >= 50:
+            for offset in range(0, SCRAPE_DEPTH, 30):
+                if len(results) >= SCRAPE_DEPTH:
                     break
 
                 search_url = f'https://html.duckduckgo.com/html/?q={quote(query)}&s={offset}'
@@ -933,7 +971,7 @@ class VideoScraper:
 
                 for item in result_items:
                     try:
-                        if len(results) >= 50:
+                        if len(results) >= SCRAPE_DEPTH:
                             break
 
                         # Get link
@@ -1241,7 +1279,7 @@ def setup_routes(app, socketio):
                     streamed.add(r['url'])
                     emit('new_result', {'result': r})
 
-                discovery_timeout = float(os.environ.get('DISCOVERY_TIMEOUT', 40))
+                discovery_timeout = DISCOVERY_TIMEOUT_DEFAULT
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 try:
