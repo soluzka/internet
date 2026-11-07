@@ -56,6 +56,34 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'video_index.db')
 
+# Discovery writes while searches read and log. SQLite's default 5 s lock wait
+# was too short, so a busy database surfaced as "Search Error: database is
+# locked" and threw away a search that had already found its results.
+DB_TIMEOUT = 30.0
+
+
+def connect_db(db_path: str) -> sqlite3.Connection:
+    """Open the index database with a lock wait long enough to queue, not fail."""
+    conn = sqlite3.connect(db_path, timeout=DB_TIMEOUT)
+    conn.execute('PRAGMA busy_timeout = %d' % int(DB_TIMEOUT * 1000))
+    return conn
+
+
+def log_search(db_path: str, query: str, count: int) -> None:
+    """Record a search. Best effort: this must never fail the search itself."""
+    try:
+        conn = connect_db(db_path)
+        try:
+            conn.execute(
+                "INSERT INTO search_history (query, result_count, searched_at) VALUES (?, ?, ?)",
+                (query, count, time.time())
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        logger.warning(f'Could not log search {query!r}: {exc}')
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS videos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,15 +142,21 @@ class MLDatabase:
 
     def _init_db(self):
         """Initialize the SQLite database."""
-        conn = sqlite3.connect(self.db_path)
-        conn.executescript(SCHEMA)
-        conn.commit()
-        conn.close()
+        conn = connect_db(self.db_path)
+        try:
+            # WAL lets searches read while discovery is writing, and keeps
+            # writers queued on the busy timeout instead of erroring out.
+            conn.execute('PRAGMA journal_mode=WAL')
+            conn.execute('PRAGMA synchronous=NORMAL')
+            conn.executescript(SCHEMA)
+            conn.commit()
+        finally:
+            conn.close()
         logger.info(f"Database initialized at {self.db_path}")
 
     def _rebuild_index(self):
         """Rebuild the TF-IDF index from stored videos."""
-        conn = sqlite3.connect(self.db_path)
+        conn = connect_db(self.db_path)
         rows = conn.execute(
             "SELECT id, title, description, tags FROM videos ORDER BY id"
         ).fetchall()
@@ -173,7 +207,7 @@ class MLDatabase:
                   source: str = 'Unknown', platform: str = 'Unknown',
                   tags: str = '') -> bool:
         """Add a video to the database. Returns True if new, False if duplicate."""
-        conn = sqlite3.connect(self.db_path)
+        conn = connect_db(self.db_path)
         try:
             conn.execute(
                 """INSERT OR IGNORE INTO videos
@@ -250,7 +284,7 @@ class MLDatabase:
         if limit:
             top_indices = top_indices[:limit]
 
-        conn = sqlite3.connect(self.db_path)
+        conn = connect_db(self.db_path)
         results = []
         for idx in top_indices:
             vid_id = self.video_ids[idx]
@@ -278,7 +312,7 @@ class MLDatabase:
 
     def record_click(self, query: str, url: str, title: str = ''):
         """Record that user clicked a result - the ML learns from this."""
-        conn = sqlite3.connect(self.db_path)
+        conn = connect_db(self.db_path)
         conn.execute(
             "UPDATE videos SET click_count = click_count + 1 WHERE url = ?",
             (url,)
@@ -299,7 +333,7 @@ class MLDatabase:
 
     def get_stats(self) -> Dict:
         """Get database statistics."""
-        conn = sqlite3.connect(self.db_path)
+        conn = connect_db(self.db_path)
         try:
             total = conn.execute("SELECT COUNT(*) FROM videos").fetchone()[0]
             by_source = conn.execute(
@@ -1116,7 +1150,7 @@ class RankingAgent:
         ml_scores = {r['url']: r['score'] for r in ml_results}
 
         # Apply learned preferences (click boost)
-        conn = sqlite3.connect(self.database.db_path)
+        conn = connect_db(self.database.db_path)
         click_data = conn.execute(
             "SELECT clicked_url, COUNT(*) as clicks FROM learned_preferences GROUP BY clicked_url"
         ).fetchall()
@@ -1455,13 +1489,7 @@ def setup_routes(app, socketio):
 
                 total_matches = database.count_matches(query)
 
-                conn = sqlite3.connect(database.db_path)
-                conn.execute(
-                    "INSERT INTO search_history (query, result_count, searched_at) VALUES (?, ?, ?)",
-                    (query, len(ranked), time.time())
-                )
-                conn.commit()
-                conn.close()
+                log_search(database.db_path, query, len(ranked))
 
                 emit('search_completed', {
                     'query': query,
@@ -1487,7 +1515,11 @@ def setup_routes(app, socketio):
         title = (data or {}).get('title', '')
         query = (data or {}).get('query', '')
         if url and query:
-            database.record_click(query, url, title)
+            try:
+                database.record_click(query, url, title)
+            except sqlite3.Error as exc:
+                # A click that cannot be stored must not break the page.
+                logger.warning(f'Could not record click {url!r}: {exc}')
 
     @socketio.on('get_stats')
     def handle_get_stats():
@@ -1636,13 +1668,7 @@ def setup_routes(app, socketio):
                 all_results = database.search(query)
                 ranked = ranking_agent.rank(query, all_results)
 
-                conn = sqlite3.connect(database.db_path)
-                conn.execute(
-                    "INSERT INTO search_history (query, result_count, searched_at) VALUES (?, ?, ?)",
-                    (query, len(ranked), time.time())
-                )
-                conn.commit()
-                conn.close()
+                log_search(database.db_path, query, len(ranked))
 
                 discovered_urls = getattr(discovery_agent, 'last_added_urls', set())
                 return jsonify({
