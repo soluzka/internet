@@ -70,6 +70,41 @@
         .stat-item { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
         .stat-value { color: var(--accent2); font-weight: 600; }
 
+        /* Connection state: says where the results come from */
+        .conn-chip {
+            margin-left: 18px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            border-radius: 999px;
+            border: 1px solid var(--surface2);
+            background: var(--surface);
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-dim);
+            white-space: nowrap;
+            cursor: default;
+        }
+        .conn-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--text-dim);
+            flex: none;
+        }
+        .conn-chip[data-state="live"] { color: #4ade80; border-color: rgba(74, 222, 128, 0.4); }
+        .conn-chip[data-state="live"] .conn-dot { background: #4ade80; box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.18); }
+        .conn-chip[data-state="connecting"] { color: #fbbf24; border-color: rgba(251, 191, 36, 0.4); }
+        .conn-chip[data-state="connecting"] .conn-dot { background: #fbbf24; animation: conn-pulse 1.2s ease-in-out infinite; }
+        .conn-chip[data-state="retrying"] { color: #fbbf24; border-color: rgba(251, 191, 36, 0.4); }
+        .conn-chip[data-state="retrying"] .conn-dot { background: #fbbf24; animation: conn-pulse 1.2s ease-in-out infinite; }
+        .conn-chip[data-state="snapshot"] { color: #60a5fa; border-color: rgba(96, 165, 250, 0.4); }
+        .conn-chip[data-state="snapshot"] .conn-dot { background: #60a5fa; }
+        .conn-chip[data-state="offline"] { color: #f87171; border-color: rgba(248, 113, 113, 0.45); }
+        .conn-chip[data-state="offline"] .conn-dot { background: #f87171; }
+        @keyframes conn-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+
         /* Search section */
         .search-section {
             max-width: 900px;
@@ -477,8 +512,12 @@
         /* Responsive */
         @media (max-width: 600px) {
             .header-stats { display: none; }
+            .conn-chip { margin-left: auto; font-size: 11px; padding: 5px 10px; }
             .search-title { font-size: 24px; }
             .results-container { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 430px) {
+            .logo-text { display: none; }
         }
     </style>
 </head>
@@ -493,6 +532,11 @@
             <div class="stat-item">Library videos: <span class="stat-value" id="statVideos">0</span></div>
             <div class="stat-item">Searches run: <span class="stat-value" id="statSearches">0</span></div>
             <div class="stat-item">Clicks recorded: <span class="stat-value" id="statClicks">0</span></div>
+        </div>
+        <div class="conn-chip" id="connChip" data-state="connecting"
+             title="Checking the connection to the search server">
+            <span class="conn-dot"></span>
+            <span id="connText">Connecting…</span>
         </div>
     </div>
 
@@ -627,6 +671,7 @@
         try {
             // Reconnect a few times: a server restart used to leave the page
             // stranded in bundled-index mode for as long as the tab stayed open.
+            setConnection('connecting');
             socket = io({
                 timeout: 10000,
                 reconnection: true,
@@ -643,16 +688,21 @@
                 connectErrors += 1;
                 if (connectErrors < 3) {
                     console.log('Socket.IO not reachable yet, retrying');
+                    setConnection('retrying');
                     return;
                 }
                 console.log('Socket.IO unavailable, using bundled index');
                 useHttpFallback = true;
+                setConnection('snapshot');
                 try { socket.disconnect(); } catch (err) {}
                 socket = null;
-                loadIndex().then(() => updateStats(indexStats)).catch(() => {});
+                loadIndex()
+                    .then(() => updateStats(indexStats))
+                    .catch(() => setConnection('offline'));
             });
         } catch (e) {
             useHttpFallback = true;
+            setConnection('snapshot');
         }
 
         const searchInput = document.getElementById('searchInput');
@@ -669,8 +719,13 @@
         if (socket) {
             socket.on('connect', () => {
                 console.log('Connected to AI Search Engine');
+                setConnection('live');
                 // Tell the server this page understands batched results.
                 socket.emit('client_protocol', { version: 2 });
+            });
+
+            socket.on('disconnect', () => {
+                if (!useHttpFallback) setConnection('retrying');
             });
 
             socket.on('connected', (data) => {
@@ -681,7 +736,9 @@
 
         // No backend: stats come from the bundled index
         if (useHttpFallback) {
-            loadIndex().then(() => updateStats(indexStats)).catch(() => {});
+            loadIndex()
+                .then(() => updateStats(indexStats))
+                .catch(() => setConnection('offline'));
         }
 
         if (socket) {
@@ -842,7 +899,9 @@
                     searchBtn.disabled = false;
                     searchBtn.textContent = 'Search';
                     aiStatus.innerHTML = '';
-                    showToast('error', 'Search Error', 'Could not load the video index');
+                    setConnection('offline');
+                    showToast('error', 'Search Error',
+                        'The search server is not reachable and the bundled index could not be loaded. Reload the page to retry.');
                 });
             }
         }
@@ -1451,6 +1510,45 @@
             document.getElementById('statVideos').textContent = format(stats.total_videos);
             document.getElementById('statSearches').textContent = format(stats.total_searches);
             document.getElementById('statClicks').textContent = format(stats.total_clicks);
+        }
+
+        // --- Connection state ---
+        // Says where results are coming from: the live server, or the bundled
+        // snapshot that is only as fresh as the last export.
+        // Kept inside the function so the socket setup above can call it before
+        // this point in the script runs.
+        function setConnection(state) {
+            const states = {
+                connecting: {
+                    text: 'Connecting…',
+                    title: 'Checking whether the search server is running.',
+                },
+                live: {
+                    text: 'Server connected',
+                    title: 'Live server: searches use the full library, and discovery, downloads and click tracking all work.',
+                },
+                retrying: {
+                    text: 'Reconnecting…',
+                    title: 'The server stopped answering. Retrying a few times before falling back to the bundled snapshot.',
+                },
+                snapshot: {
+                    text: 'Bundled snapshot',
+                    title: 'Server unreachable: searching the bundled videos.json, which only holds what was last exported. New discovery, downloads and saved searches do not work in this mode.',
+                },
+                offline: {
+                    text: 'Not connected',
+                    title: 'Neither the server nor the bundled index could be loaded. Reload the page to retry.',
+                },
+            };
+            const key = states[state] ? state : 'offline';
+            const info = states[key];
+            const chip = document.getElementById('connChip');
+            const text = document.getElementById('connText');
+            if (!chip || !text) return;
+            if (chip.dataset.state === key) return;
+            chip.dataset.state = key;
+            chip.title = info.title;
+            text.textContent = info.text;
         }
 
         // --- Toast ---
