@@ -41,6 +41,7 @@ SONG_PROMPT = (
     '[chorus]\n'
     '[verse 2]\n'
     '[chorus]\n'
+    '[verse 3]\n'
     '[bridge]\n'
     '[chorus]\n'
     '\n'
@@ -50,14 +51,16 @@ SONG_PROMPT = (
     '- The chorus is the same words every time it appears, word for word. It is '
     'the part someone would sing back.\n'
     '- The verses move: in verse one something is happening, in verse two '
-    'something has changed. The bridge says the thing the verses avoided.\n'
+    'something has changed, and verse three is what it costs. The bridge says '
+    'the thing the verses avoided.\n'
     '- Your own language, your own images. Nobody has given you words to reuse: '
     'invent the details - a name, an object, a place, a time - that only this '
     'song has.\n'
     '- Concrete things a person can see, do or lose. No metaphors about music, '
     'technology, the internet or collections of anything.\n'
-    '- Four lines per verse, four per chorus, two for the bridge. Under twelve '
-    'words a line. Do not force rhymes.\n'
+    '- Four lines per verse, four per chorus, two for the bridge: a minute and '
+    'a half of singing needs that much. Under twelve words a line. Do not force '
+    'rhymes.\n'
     '- Singable rhythm: short lines, plain words, one thought per line.\n'
     '- No title, no numbering, no notes, no quotation marks. Only the tags and '
     'the lines.\n'
@@ -167,7 +170,7 @@ class Lyricist:
         random.seed(seed)
         output = generator(
             messages,
-            max_new_tokens=560,
+            max_new_tokens=800,
             do_sample=True,
             temperature=0.92,
             top_p=0.92,

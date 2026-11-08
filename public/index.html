@@ -912,8 +912,35 @@
                 reconnection: true,
                 reconnectionAttempts: 5,
                 reconnectionDelay: 1500,
+                // Connected by hand below, once something has answered.
+                autoConnect: ON_LOCAL_APP,
             };
             socket = ON_LOCAL_APP ? io(options) : io(LOCAL_APP, options);
+            // Anywhere other than the app's own origin, nothing is listening
+            // unless the desktop app happens to be running on this machine. One
+            // cheap request finds out; without it every visitor watches five
+            // "connection refused" retries in the console before the page falls
+            // back to the bundled index.
+            if (!ON_LOCAL_APP) {
+                fetchBounded(LOCAL_APP + '/api/stats', {}, 2500)
+                    .then((probe) => {
+                        if (probe && probe.ok) {
+                            socket.connect();
+                            return;
+                        }
+                        throw new Error('the desktop app is not running');
+                    })
+                    .catch(() => {
+                        console.log('The desktop app is not running here, using bundled index');
+                        useHttpFallback = true;
+                        setConnection('snapshot');
+                        try { if (socket) socket.disconnect(); } catch (err) {}
+                        socket = null;
+                        loadIndex()
+                            .then(() => updateStats(indexStats))
+                            .catch(() => setConnection('offline'));
+                    });
+            }
             // First failure switches to the bundled index for good, so a static
             // host does not get hammered with /socket.io requests.
             // A restart makes the first attempts fail; only give up on the
@@ -2444,7 +2471,9 @@
             // it sit level instead of sounding like a flat loop.
             const offline = new OfflineAudioContext(1, Math.ceil(seconds * sampleRate), sampleRate);
             const master = offline.createGain();
-            master.gain.value = 0.85;
+            // A touch above the old 0.85: the band sat noticeably quieter than
+            // the model's render, so the swap between them was a jump in volume.
+            master.gain.value = 0.92;
             const highpass = offline.createBiquadFilter();
             highpass.type = 'highpass';
             highpass.frequency.value = 32;
@@ -2708,11 +2737,10 @@
 
         async function requestModelSong(summary, lyrics, seed) {
             const lyricText = lyrics.map(part => part.lines.join('\n')).join('\n\n');
-            // 45 s at 16 steps is a full verse-chorus-verse on one 8 GB card.
-            // Every step is about eleven seconds here (the 8 GB card pages the
-            // weights in and out), so the 24 steps this used to ask for meant
-            // five minutes of silence before the first note of the real song.
-            const payload = { prompt: modelPrompt(summary, seed), lyrics: lyricText, seconds: 45, steps: 16 };
+            // 90 s carries three verses, three choruses and a bridge; 16 steps
+            // keeps the render near six minutes on the 8 GB card, where every
+            // step costs about eleven seconds as the weights page in and out.
+            const payload = { prompt: modelPrompt(summary, seed), lyrics: lyricText, seconds: 90, steps: 16 };
 
             // A model address pasted into the page is remembered in this
             // browser, so a tunnel URL that changes on every restart never

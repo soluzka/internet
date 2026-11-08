@@ -243,8 +243,12 @@ def _write_samples(target_wav, out_path, sample_rate):
     # wave module cannot fail that way.
     import wave
 
+    # Every render is lifted to the same peak. The model hands back whatever
+    # level it feels like - some songs peaked at 0.4 and sounded muffled next to
+    # the loud browser band - so 0.95 (about -0.5 dBFS) is applied here instead
+    # of only trimming the ones that clip.
     peak = float(np.abs(frames).max())
-    scale = 0.9 / peak if peak > 0.99 else 1.0
+    scale = (0.95 / peak) if peak > 1e-6 else 1.0
     pcm = np.clip(frames * scale, -1.0, 1.0)
     pcm = (pcm * 32767.0).astype('<i2')
     with wave.open(out_path, 'wb') as handle:
