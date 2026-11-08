@@ -556,6 +556,9 @@
         /* Beside the song button and always visible: the AI lives on this machine,
            and this is the one control that can bring it up from the page. */
         .wake-btn { opacity: 0.85; }
+        /* Reports the card the render actually uses, straight from /health, so
+           "is it on the GPU" is answerable without opening a console. */
+        .gpu-chip { margin-left: 0; font-size: 11px; }
         .wake-btn[data-state="ready"] { opacity: 1; border-color: rgba(0, 206, 201, 0.6); }
         .library-song-btn[disabled] { opacity: 0.55; cursor: default; }
 
@@ -765,6 +768,11 @@
              title="Checking the connection to the search server">
             <span class="conn-dot"></span>
             <span id="connText">Connecting…</span>
+        </div>
+        <div class="conn-chip gpu-chip" id="gpuChip" data-state="connecting"
+             title="What the song model is running on">
+            <span class="conn-dot"></span>
+            <span id="gpuText">GPU…</span>
         </div>
     </div>
 
@@ -2871,6 +2879,42 @@
         // models take a minute to load after the port is open, which is why the
         // button says starting until health answers rather than just until the
         // browser is done.
+        // The song service says what it is running on; this shows that rather than
+        // guessing from the outside. Off means the service is not up at all, "CPU
+        // only" means torch could not see a card, and the card's name means the
+        // next render will use CUDA.
+        async function refreshGpu() {
+            const chip = document.getElementById('gpuChip');
+            const text = document.getElementById('gpuText');
+            if (!chip || !text) return;
+            const bases = [
+                'http://127.0.0.1:8090',
+                String(window.SONG_API || '').replace(/\/+$/, ''),
+            ];
+            let info = null;
+            for (const base of bases) {
+                if (!base) continue;
+                try {
+                    const response = await fetchBounded(base + '/health', {}, 4000);
+                    if (response.ok) { info = await response.json(); break; }
+                } catch (err) {}
+            }
+            if (!info) {
+                chip.dataset.state = 'offline';
+                text.textContent = 'AI off';
+                chip.title = 'The song model is not running on this machine. Press Start the AI.';
+                return;
+            }
+            const onCuda = String(info.device || '').toLowerCase() === 'cuda';
+            chip.dataset.state = onCuda ? 'live' : 'retrying';
+            text.textContent = onCuda
+                ? 'CUDA · ' + String(info.gpu || 'GPU').replace(/^NVIDIA\s+/i, '')
+                : 'CPU only';
+            chip.title = onCuda
+                ? `${info.gpu}, ${info.vram_gb} GB - ${info.loaded ? 'model loaded and ready' : 'model loads on the first song'}`
+                : 'Torch cannot see a CUDA device, so songs and lyrics will be very slow.';
+        }
+
         function wakeLocalAI() {
             const btn = document.getElementById('wakeBtn');
             if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; btn.dataset.state = 'starting'; }
@@ -2882,6 +2926,7 @@
             }
             let tries = 0;
             const finish = (ready) => {
+                if (ready) refreshGpu();
                 if (!btn) return;
                 btn.disabled = false;
                 btn.textContent = ready ? 'AI ready' : 'Start the AI';
@@ -4109,6 +4154,11 @@
 
         // Focus search input on load
         searchInput.focus();
+
+        // The GPU badge says what the render will actually use. It is checked
+        // again whenever Start the AI reports ready, and it stays honest when the
+        // service is not running: AI off, rather than a stale card name.
+        refreshGpu();
     </script>
 </body>
 </html>
