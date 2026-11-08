@@ -80,22 +80,57 @@ _lyricist_instance = None
 _lyricist_lock = threading.Lock()
 
 
+def _release_pipeline():
+    """Drop the song model so the card is free for the lyric model.
+
+    ACE-Step holds about 7.9 GB of the 8 GB card and Qwen needs 3 GB, so the two
+    cannot sit there together: whoever goes second pages, and paging cost a
+    minute on the lyrics and doubled the render to 23 s a step. Every compose
+    starts with the lyrics, so the lyric model takes the card and the song model
+    is loaded again afterwards - about 40 seconds, which is cheaper than the
+    paging it replaces and much cheaper than six megabytes of Qwen per second.
+    """
+    global _pipeline
+    with _pipeline_lock:
+        instance = _pipeline
+        _pipeline = None
+    if instance is not None:
+        del instance
+        import gc
+
+        gc.collect()
+        try:
+            import torch
+
+            torch.cuda.empty_cache()
+        except Exception:  # noqa: BLE001
+            pass
+        print('released the song model to free VRAM', flush=True)
+
+
 def _lyricist():
     """One language model for the process, loaded on first use.
 
-    It runs on the CPU, and that is deliberate. The 8 GB card is spoken for by
-    ACE-Step (about 7.9 GB), so loading Qwen onto it meant paging 3 GB into the
-    ~300 MB left over: the lyric wait grew past a minute, and a song rendering
-    at the same time slowed from 11 s a step to 23. On the CPU it never touches
-    the card, so neither the lyrics nor the render wait for the other.
-    LYRICS_DEVICE=cuda puts it back on the GPU for a bigger card.
+    On a GPU it is loaded only after the song model has been released, so it
+    arrives on an empty card in about ten seconds instead of paging into the few
+    hundred megabytes ACE-Step leaves behind. LYRICS_DEVICE=cpu writes the words
+    in system RAM instead, which costs more time but never touches the card.
     """
     global _lyricist_instance
     with _lyricist_lock:
         if _lyricist_instance is None:
             from lyrics import Lyricist, lyrics_model_id, load_manifest
 
-            device = os.environ.get('LYRICS_DEVICE') or 'cpu'
+            device = os.environ.get('LYRICS_DEVICE')
+            if not device:
+                try:
+                    import torch
+
+                    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+                except Exception:  # noqa: BLE001
+                    device = 'cpu'
+            if device.startswith('cuda'):
+                _release_pipeline()
             _lyricist_instance = Lyricist(lyrics_model_id(load_manifest()), device=device)
         return _lyricist_instance
 
