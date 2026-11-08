@@ -143,6 +143,44 @@ def _release_lyricist():
     print('released the lyric model to free VRAM', flush=True)
 
 
+def _write_audio(result, out_path):
+    """Write whatever the pipeline returned, without needing torchcodec."""
+    data = None
+    sample_rate = 48000
+    if isinstance(result, dict):
+        try:
+            sample_rate = int(result.get('sample_rate') or result.get('sr') or 48000)
+        except (TypeError, ValueError):
+            sample_rate = 48000
+        for key in ('audio', 'target_wavs', 'wav', 'samples'):
+            if result.get(key) is not None:
+                data = result[key]
+                break
+    else:
+        data = result
+
+    if data is None:
+        return False
+    try:
+        import numpy as np
+        import soundfile as sf
+
+        if hasattr(data, 'detach'):
+            data = data.detach().float().cpu().numpy()
+        if isinstance(data, (list, tuple)):
+            data = data[0] if data else None
+        if data is None:
+            return False
+        samples = np.asarray(data).squeeze()
+        if samples.ndim == 0 or samples.size == 0:
+            return False
+        sf.write(out_path, samples, sample_rate)
+        return True
+    except Exception:  # noqa: BLE001 - the caller reports a readable error
+        traceback.print_exc()
+        return False
+
+
 def _run_job(token, prompt, lyrics, seconds, steps, seed):
     tmp_dir = tempfile.mkdtemp(prefix='ace_')
     out_path = os.path.join(tmp_dir, 'song.wav')
@@ -172,8 +210,12 @@ def _run_job(token, prompt, lyrics, seconds, steps, seed):
                 oss_steps=[],
                 guidance_scale_text=0.0,
                 guidance_scale_lyric=0.0,
-                save_path=out_path,
+                # No save_path: letting the pipeline save needs torchcodec, which
+                # is what previously failed with "TorchCodec is required". The
+                # returned samples are written with soundfile instead.
+                save_path=None,
             )
+        _write_audio(result, out_path)
         if not os.path.exists(out_path):
             # Some versions write next to the working directory instead.
             for name in os.listdir(tmp_dir):
@@ -203,12 +245,17 @@ def api_lyrics():
     if not isinstance(corpus, list):
         corpus = []
     corpus = [str(item)[:80] for item in corpus][:60]
+    angle = str(body.get('angle') or '')[:120]
+    avoid = body.get('avoid') or []
+    if not isinstance(avoid, list):
+        avoid = []
+    avoid = [str(line)[:160] for line in avoid][-14:]
 
     try:
         from lyrics import Lyricist, lyrics_model_id, load_manifest
 
         lyricist = _lyricist()
-        lines = lyricist.write(genre, subject, seed, corpus=corpus)
+        lines = lyricist.write(genre, subject, seed, corpus=corpus, angle=angle, avoid=avoid)
     except Exception as exc:  # noqa: BLE001 - report the reason to the page
         traceback.print_exc()
         return jsonify({'error': f'lyric model failed: {exc}'}), 500

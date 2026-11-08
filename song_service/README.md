@@ -2,26 +2,18 @@
 
 Two different things live near this folder, and it matters which is which.
 
-## The website uses Cloudflare's model
+## This service is the only AI in the project
 
-`worker.js` routes `POST /api/song` and `GET /api/song-file` to the model that
-Cloudflare hosts:
+The deployed Worker runs no models: `worker.js` serves the static page and
+proxies downloads, and `wrangler.jsonc` declares no AI binding. Everything that
+writes or sings happens here, on this machine.
 
-```
-env.AI.run('minimax/music-2.6', { prompt, lyrics, is_instrumental: false })
-```
+When the page is opened locally it calls `http://127.0.0.1:8090` for both halves
+of a song: the lyric model first, then ACE-Step for the sung audio. If this
+service is not running, the page falls back to the sampled band in
+`public/index.html` — instruments only, no voice.
 
-That gives a real song with sung vocals from the page, on any device, with no
-local machine, no tunnel and no download. It bills roughly $0.15 per track, so
-the page only calls it when you press the button. `song-file` proxies the
-provider's audio so the page receives one same-origin file.
-
-When that route does not exist (plain static hosting, or a local Flask run with
-no Worker in front), the page falls back to the browser synthesiser in
-`public/index.html` — free and instant, but it sounds like a synth, because it
-is one.
-
-## ACE-Step here is the local alternative
+## ACE-Step is the music model
 
 This folder can also run a full model on your own GPU. That is **not** installed
 to the website and cannot be: Workers have no Python, no CUDA and no gigabytes

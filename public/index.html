@@ -1937,30 +1937,31 @@
             const offset = seed % words.length;
             const word = (index) => words[(index + offset) % words.length];
             const line = (text) => text.charAt(0).toUpperCase() + text.slice(1);
-            return [
-                { section: 'Chorus', lines: [
+            const banks = {
+                'Chorus': [
                     line(`${word(0)} in the rain, ${word(1)} on the wire`),
                     'I keep the same road turning in my hands',
                     line(`Say the ${word(2)} again, louder than the engine`),
                     'Nothing in my pockets but the night',
-                ] },
-                { section: 'Verse 1', lines: [
+                ],
+                'Verse 1': [
                     line(`${word(4)} on the window, ${word(5)} in the hall`),
                     'You left the door half open and the lights on',
                     line(`I wore the ${word(6)} jacket till the seams gave out`),
                     'Counting cracks in the ceiling until the morning came',
-                ] },
-                { section: 'Verse 2', lines: [
+                ],
+                'Verse 2': [
                     line(`${word(8)} in the mirror, ${word(9)} in my teeth`),
                     'The city keeps its promises in ways I cannot read',
                     line(`Every ${word(10)} sounds like something that I lost`),
                     'I am learning how to carry what I need',
-                ] },
-                { section: 'Bridge', lines: [
+                ],
+                'Bridge': [
                     'Strip it back until the room tone is the only sound',
                     'Hold the quiet, then step out into the cold',
-                ] },
-            ];
+                ],
+            };
+            return lyricForm(seed).map(name => ({ section: name, lines: banks[name] || banks['Verse 1'] }));
         }
 
         // Words written for this song by a language model, not assembled from a
@@ -1971,8 +1972,20 @@
             // Material gathered from the listings themselves: words and two-word
             // phrases from their titles and descriptions. The model writes from
             // this, it is not allowed to write about it.
-            const corpus = lyricCorpus(36);
+            const avoid = window._lastLyricLines || [];
+            const corpus = lyricCorpus(seed, 36);
             const subject = corpus.length ? corpus.join(', ') : 'rain, machines, distance, night';
+            // A different stance per seed, so the songs are not the same song with
+            // different words.
+            const angles = [
+                'second person, walking at night',
+                'first person leaving a city for good',
+                'a letter that was never sent',
+                'a memory of weather and machines',
+                'two people not saying the thing they mean',
+                'a worker finishing a long shift',
+            ];
+            const angle = angles[Math.abs(seed) % angles.length];
             const bases = [''];
             if (/^(127\.0\.0\.1|localhost)$/.test(location.hostname)) {
                 bases.push('http://127.0.0.1:8090');
@@ -1985,7 +1998,7 @@
                     response = await fetchBounded(base + '/api/lyrics', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ genre, subject, corpus, seed }),
+                        body: JSON.stringify({ genre, subject, corpus, angle, seed, avoid }),
                     }, 8000);
                 } catch (err) {
                     continue;
@@ -2008,13 +2021,21 @@
             'music', 'audio', 'hd', 'hq', 'live', 'feat', 'ft', 'prod', 'remix', 'version', 'edit',
             'clip', 'release', 'records', 'label', 'free', 'download', 'watch', 'share', 'like']);
 
-        function lyricCorpus(limit) {
+        // Titles like "Untitled Video" are most of what a library full of scraped
+        // links contains, so they are dropped rather than turned into lyrics.
+        const LYRIC_JUNK = new Set(['untitled', 'video', 'videos', 'youtube', 'unknown', 'none', 'null',
+            'official', 'audio', 'lyric', 'lyrics', 'full', 'clip', 'clips', 'short', 'shorts',
+            'trailer', 'teaser', 'part', 'episode', 'live', 'new', 'hq', 'hd']);
+
+        function lyricCorpus(seed, limit) {
             const results = window._lastResults || [];
             const phrases = [];
             const seen = new Set();
             const add = (phrase) => {
                 const key = phrase.toLowerCase();
-                if (seen.has(key) || phrases.length >= (limit || 36)) return;
+                const parts = key.split(' ');
+                if (parts.some(part => LYRIC_JUNK.has(part) || part.length < 3)) return;
+                if (seen.has(key)) return;
                 seen.add(key);
                 phrases.push(phrase);
             };
@@ -2022,13 +2043,33 @@
                 const text = `${result.title || ''} ${result.description || ''}`
                     .toLowerCase()
                     .replace(/[^a-z0-9' ]+/g, ' ');
-                const words = text.split(/\s+/).filter(word => word.length > 3 && !LYRIC_STOP.has(word) && !REMIX_NOISE.has(word));
+                const words = text.split(/\s+/)
+                    .filter(word => word.length > 3 && !LYRIC_STOP.has(word) && !LYRIC_JUNK.has(word) && !REMIX_NOISE.has(word));
                 words.forEach((word, index) => {
                     if (index + 1 < words.length) add(`${word} ${words[index + 1]}`);
                     add(word);
                 });
             });
-            return phrases.slice(0, limit || 36);
+            if (!phrases.length) return [];
+            // Each seed starts somewhere else in the same pool, so pressing again
+            // does not hand the model the identical material.
+            const offset = Math.abs(seed) % phrases.length;
+            const rotated = phrases.slice(offset).concat(phrases.slice(0, offset));
+            return rotated.slice(0, limit || 36);
+        }
+
+        // Song forms. The seed picks one, so the words land in a different shape
+        // each time instead of always chorus / verse / verse / bridge.
+        const LYRIC_FORMS = [
+            ['Chorus', 'Verse 1', 'Chorus', 'Verse 2', 'Bridge'],
+            ['Verse 1', 'Chorus', 'Verse 2', 'Chorus'],
+            ['Chorus', 'Verse 1', 'Verse 2', 'Chorus'],
+            ['Verse 1', 'Verse 2', 'Chorus', 'Bridge'],
+            ['Chorus', 'Verse 1', 'Bridge', 'Verse 2', 'Chorus'],
+        ];
+
+        function lyricForm(seed) {
+            return LYRIC_FORMS[Math.abs(seed) % LYRIC_FORMS.length];
         }
 
         function applyAILyrics(lyrics, lines) {
@@ -2541,7 +2582,7 @@
         // Where a song can come from, in order: this origin (the Worker route,
         // or the Flask app), a local model service on 8090 when the page is on
         // this machine, then any URL configured in config.js. Each answer is
-        // either finished audio (Cloudflare model) or a job to poll (local ACE).
+        // either finished audio (the local model on 8090) or a job to poll (ACE).
         // Every network step is bounded: a model that is loading or wedged must
         // not leave the page saying "composing" forever. Abort means fall back.
         async function fetchBounded(url, options, ms) {
@@ -2649,13 +2690,14 @@
                     const written = await aiLyrics(summary, seed);
                     if (written) lyrics = applyAILyrics(lyrics, written);
                 } catch (err) {}
+                // Remembered so the next song avoids these exact lines.
+                window._lastLyricLines = lyrics.reduce((all, part) => all.concat(part.lines), []);
                 // A model song takes tens of seconds, so the player says what it is
                 // waiting for instead of looking stuck on the old picture.
                 stage.innerHTML = '<div class="gen-canvas" style="display:flex;align-items:center;justify-content:center;text-align:center;color:#8b9aa0;font-size:13px;padding:20px"><div id="songStatus">Asking the song model...</div></div>';
-                // The model first: Cloudflare hosts it, so a real sung song needs
-                // no local machine. The browser synth stays as the fallback for
-                // when the route is not there (plain static hosting) or the model
-                // refuses the request.
+                // The song can come from this machine's model service; nothing is
+                // sent to a hosted provider. The browser band stays as the
+                // fallback for when that service is not running.
                 const started = performance.now();
                 let modelError = null;
                 const model = null;

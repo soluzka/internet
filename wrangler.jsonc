@@ -9,9 +9,8 @@
     "binding": "ASSETS",
     "not_found_handling": "single-page-application"
   },
-  "ai": {
-    "binding": "AI"
-  },
+  // No AI binding: this deployment runs no Cloudflare-hosted models. The AI is
+  // the local song_service, which the page reaches on this machine.
   // Where the download backend lives. Static hosting cannot run yt-dlp, so the
   // Worker forwards /api/download and /download_file/... to this URL. Leave it
   // empty to keep downloads disabled on the deployed copy; the page then opens

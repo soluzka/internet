@@ -26,12 +26,16 @@ SYSTEM_PROMPT = (
 )
 
 USER_PROMPT = (
-    'Write 14 lines of lyrics for a {genre} song.\n'
+    'Write {count} lines of lyrics for a {genre} song.\n'
+    'Write from this stance: {angle}.\n'
     'Here are phrases taken from song titles and descriptions. Use them as raw '
     'material: pick the images and sounds that feel like weather, places, people, '
     'machines, or feelings, and write your own lines around them. Mix them up, '
     'change the wording, invent what is missing.\n'
     'Phrases: {subject}.\n'
+    '{avoid}'
+    'Make every line a real sentence that a person could sing: a thing seen, done '
+    'or felt, not a pile of nouns.\n'
     'Rules:\n'
     '- Never mention a library, a database, a collection, a playlist, a search, '
     'the internet, videos, tracks, an index or a count of anything. If you are '
@@ -104,12 +108,23 @@ class Lyricist:
                     self._build()
         return self._pipeline
 
-    def write(self, genre='electronic music', subject='', seed=0, lines=14, corpus=None):
+    def write(self, genre='electronic music', subject='', seed=0, lines=14, corpus=None, angle='', avoid=None):
         generator = self.pipeline
         material = ', '.join(corpus) if corpus else (subject or 'night, movement, weather')
+        avoid = [str(line).strip() for line in (avoid or []) if str(line).strip()][-14:]
+        avoid_block = ''
+        if avoid:
+            avoid_block = ('Do not repeat these lines or anything close to them:\n'
+                           + '\n'.join(avoid) + '\n')
+        # The line count and the stance move with the seed too, so two songs do
+        # not come back with the same shape.
+        count = 12 + (abs(seed) % 5)
         prompt = USER_PROMPT.format(
             genre=genre or 'electronic music',
             subject=material[:1200],
+            count=count,
+            angle=angle or 'first person, present tense',
+            avoid=avoid_block,
         )
         messages = [
             {'role': 'system', 'content': SYSTEM_PROMPT},
@@ -131,11 +146,12 @@ class Lyricist:
             text = generated[-1].get('content', '')
         elif isinstance(generated, str):
             text = generated
-        return clean_lines(text, lines)
+        return clean_lines(text, count, avoid)
 
 
-def clean_lines(text, wanted=14):
+def clean_lines(text, wanted=14, avoid=None):
     """Keep only singable lines, so a chatty answer still yields a lyric."""
+    avoid = [re.sub(r'[^a-z0-9 ]', '', str(line).lower()) for line in (avoid or [])]
     lines = []
     for raw in str(text).splitlines():
         line = re.sub(r'^\s*(?:\d+[.)]|[-*\u2022])\s*', '', raw).strip()
@@ -148,6 +164,11 @@ def clean_lines(text, wanted=14):
             continue
         if BANNED.search(line):
             continue
+        # A line that closely matches one from the last song is a repeat, not a
+        # new lyric, so it is dropped rather than shown twice.
+        normal = re.sub(r'[^a-z0-9 ]', '', line.lower())
+        if any(_too_similar(normal, other) for other in avoid):
+            continue
         lines.append(line)
     # Drop an echoed prompt or a repeated line run.
     unique = []
@@ -156,6 +177,16 @@ def clean_lines(text, wanted=14):
             continue
         unique.append(line)
     return unique[:wanted]
+
+
+def _too_similar(line, other):
+    """True when two lines share most of their words."""
+    words = set(line.split())
+    theirs = set(other.split())
+    if not words or not theirs:
+        return False
+    shared = len(words & theirs)
+    return shared / max(len(words), len(theirs)) >= 0.75
 
 
 def main():
