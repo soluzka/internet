@@ -121,6 +121,45 @@ machine, and falls back to the sampled band in the browser when the service is
 not running. On the deployed site the page reaches the same service through a
 Quick Tunnel — see below — or plays the band if nothing answers.
 
+### Installing the AI packages
+
+The song service keeps its own environment, separate from the web app's venv,
+because its dependencies are heavy and its CUDA wheels must not leak into the
+Flask app. From the repo root:
+
+```bash
+cd song_service
+python -m venv .venv
+.venv\Scripts\python install.py --check      # report what is present, change nothing
+.venv\Scripts\python install.py              # packages, then weights
+```
+
+`install.py` reads `song_service/models.json`, which is the one place versions
+are declared — a bump is a manifest edit, not a hand-run pip command.
+
+| Invocation | What it does |
+| --- | --- |
+| `--check` | Prints which packages import and which weights are on disk |
+| `--packages` | pip-installs from the manifest: `torch`/`torchaudio` from the **cu126** index, `transformers==4.57.6`, `huggingface-hub==0.36.2`, ACE-Step from git, flask, flask-cors, soundfile, librosa, hf_transfer |
+| `--weights` | Downloads ACE-Step v1 3.5B (~7 GB) and Qwen2.5-1.5B-Instruct (~3.1 GB) into `song_service/models/` |
+| *(no flag)* | Both, packages first |
+
+Things worth knowing before you start it:
+
+- **No CUDA toolkit install.** On Windows the NVIDIA driver (560 or newer)
+  provides the runtime and the cu126 torch wheel carries its own CUDA libraries.
+  PyPI's default `torch` on Windows is CPU-only, which is why the index is
+  declared per package in the manifest rather than left to pip's defaults.
+- **Weights are resumable.** About 10 GB in total, gitignored under
+  `song_service/models/`. Rerun `--weights` after an interruption: a partial
+  folder is measured and continued rather than started over.
+- **Verify the GPU** before blaming the app:
+  `.venv\Scripts\python -c "import torch; print(torch.__version__, torch.cuda.is_available())"`
+  should print `2.14.1+cu126 True`.
+- **The web app's dependencies are separate.** Flask, the socket stack,
+  faster-whisper and yt-dlp come from the root `requirements.txt` in the root
+  venv; `song_service/` needs none of them, and the root app needs no torch.
+
 ### Start everything with one click
 
 `start.cmd` (which runs `start.ps1`) brings up the whole stack in order and

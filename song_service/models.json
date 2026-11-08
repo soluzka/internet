@@ -1,5 +1,5 @@
 {
-  "//": "Everything the local song service needs, in one file. install.py pip-installs every entry in 'packages' (with its own wheel index where the default would be wrong) and then fetches each model named in 'models' into its target folder. Nothing here runs in the browser or on Cloudflare: the deployed site uses the Worker's AI binding instead.",
+  "//": "Everything the local song service needs, in one file. install.py pip-installs every entry in 'packages' (with its own wheel index where the default would be wrong) and then fetches each model named in 'models' into its target folder. Nothing here runs in the browser or on Cloudflare: the deployed Worker has no AI binding, and the page reaches this service only through the optional tunnel.",
   "python": ">=3.11",
   "cuda": {
     "runtime": "bundled in the torch wheel",
