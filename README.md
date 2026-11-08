@@ -153,10 +153,22 @@ The address is kept in this browser under `songApi` in `localStorage`, tried
 before the same-origin route and before 8090, so the deployed page sings without
 a rebuild. Paste an empty value to forget it.
 
-To give the deployed page a default instead, set `SONG_API` on the Worker
-(Workers & Pages → the Worker → Settings → Variables and Secrets, or `vars` in
-`wrangler.jsonc`): the origin only, no trailing slash and no path. A pasted
-address still wins over it.
+To give the deployed page a default instead, set `SONG_API` on the Worker, in
+one of two places:
+
+- **Dashboard:** Workers & Pages → `browser` → Settings → Variables and Secrets →
+  **Add** → name `SONG_API`, value the tunnel origin → Save. Then Deploy for the
+  variable to be picked up by that version.
+- **Repo:** the `vars` block in `wrangler.jsonc`, applied by the next deploy.
+
+Either way the value is the **origin only** — `https://name.trycloudflare.com`,
+with no trailing slash and no path, because the Worker and the page append
+`/api/song` themselves. A pasted address in the page still wins over it.
+
+Note that a Quick Tunnel address changes on every restart, so a stored default
+goes stale: after restarting `start.cmd`, paste the new address in the page (or
+update `SONG_API`). A named tunnel on a domain you own gives one hostname that
+survives restarts, at the cost of a `cloudflared tunnel login`.
 
 Cross-origin calls already work: `song_service` sends
 `Access-Control-Allow-Origin` and answers the JSON preflight with 204, so the
