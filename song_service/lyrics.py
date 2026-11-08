@@ -44,8 +44,15 @@ def load_manifest():
 
 
 def lyrics_model_id(manifest):
-    entry = manifest.get('lyrics') or {}
-    return entry.get('repo', 'Qwen/Qwen2.5-1.5B-Instruct')
+    """The downloaded weights when they exist, otherwise the repo to fetch."""
+    for model in manifest.get('models') or []:
+        if model.get('kind') != 'lyrics':
+            continue
+        local = os.path.normpath(os.path.join(os.path.dirname(ROOT), model.get('target', '')))
+        if model.get('target') and os.path.isdir(local) and any(os.scandir(local)):
+            return local
+        return model.get('repo', 'Qwen/Qwen2.5-1.5B-Instruct')
+    return 'Qwen/Qwen2.5-1.5B-Instruct'
 
 
 class Lyricist:

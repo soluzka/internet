@@ -1,11 +1,33 @@
 {
-  "//": "Model manifest for the local song service. install.py reads this file: it pip-installs each entry in 'packages' (a package manager, not a manual clone) and then fetches the weights named by 'repo' into 'target'. Nothing here runs in the browser or on Cloudflare.",
+  "//": "Everything the local song service needs, in one file. install.py pip-installs every entry in 'packages' (with its own wheel index where the default would be wrong) and then fetches each model named in 'models' into its target folder. Nothing here runs in the browser or on Cloudflare: the deployed site uses the Worker's AI binding instead.",
   "python": ">=3.11",
   "cuda": {
     "runtime": "bundled in the torch wheel",
     "index": "https://download.pytorch.org/whl/cu126",
     "driver_min": "560.00",
     "note": "No CUDA toolkit install is needed on Windows: the NVIDIA driver provides the runtime, and the torch wheel at this index carries its own CUDA libraries. PyPI's default 'torch' on Windows is CPU-only, which is why the index is declared per package instead of left to defaults."
+  },
+  "packages": [
+    { "spec": "torch", "index": "https://download.pytorch.org/whl/cu126" },
+    { "spec": "torchaudio", "index": "https://download.pytorch.org/whl/cu126" },
+    { "spec": "transformers==4.57.6", "index": "https://pypi.org/simple", "why": "The 5.x line needs huggingface-hub 2.x, which the ACE install does not use; 4.57 pairs with hub 0.36." },
+    { "spec": "huggingface-hub==0.36.2", "index": "https://pypi.org/simple", "why": "Pinned so transformers and the weight downloader agree." },
+    { "spec": "git+https://github.com/ace-step/ACE-Step.git", "why": "The music model's code. The 7 GB checkpoint is downloaded separately below." },
+    { "spec": "flask", "index": "https://pypi.org/simple", "why": "The HTTP service on 127.0.0.1:8090." },
+    { "spec": "flask-cors", "index": "https://pypi.org/simple", "why": "The page is served from another port." },
+    { "spec": "soundfile", "index": "https://pypi.org/simple", "why": "Writing the rendered wav." },
+    { "spec": "librosa", "index": "https://pypi.org/simple", "why": "ACE-Step's audio loading." }
+  ],
+  "imports": {
+    "torch": "torch",
+    "torchaudio": "torchaudio",
+    "transformers": "transformers",
+    "huggingface_hub": "huggingface_hub",
+    "ace_step": "acestep",
+    "flask": "flask",
+    "flask_cors": "flask_cors",
+    "soundfile": "soundfile",
+    "librosa": "librosa"
   },
   "models": [
     {
@@ -17,12 +39,18 @@
       "repo": "ACE-Step/ACE-Step-v1-3.5B",
       "target": "song_service/models/ACE-Step-v1-3.5B",
       "size_gb": 7,
-      "packages": [
-        { "spec": "torch", "index": "https://download.pytorch.org/whl/cu126" },
-        { "spec": "torchaudio", "index": "https://download.pytorch.org/whl/cu126" },
-        { "spec": "git+https://github.com/ace-step/ACE-Step.git" }
-      ]
+      "note": "A 3.5B text-to-music model that sings supplied lyrics. On 8 GB of VRAM it runs with cpu_offload (ACE_CPU_OFFLOAD=1), trading speed for fitting in memory."
+    },
+    {
+      "name": "Lyric writer",
+      "kind": "lyrics",
+      "license": "Apache-2.0",
+      "provider": "huggingface",
+      "repo": "Qwen/Qwen2.5-1.5B-Instruct",
+      "target": "song_service/models/Qwen2.5-1.5B-Instruct",
+      "size_gb": 3.1,
+      "note": "Writes the words before the music model sing_them. Runs in seconds on the GPU; the page asks for lyrics before it asks for the song."
     }
   ],
-  "note": "A 3.5B text-to-music model with sung lyrics. On 8 GB of VRAM it runs with cpu_offload (ACE_CPU_OFFLOAD=1), which trades speed for fitting in memory."
+  "note": "Two models, one service: lyrics first, then music. The same lyrics text is what ACE-Step sings and what the page shows and saves."
 }

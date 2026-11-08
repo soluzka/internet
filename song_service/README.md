@@ -32,15 +32,38 @@ It is still useful locally, and it is free per song.
 
 ### Install
 
-Everything is declared in `models.json`: the packages (each with the wheel index
-that makes PyTorch a CUDA build rather than the CPU one) and the weights repo.
+Everything is declared in `models.json`, so a fresh machine needs one command
+and no manual cloning or pip archaeology. The file holds two lists:
+
+| `packages` | Why it is there |
+| --- | --- |
+| `torch`, `torchaudio` (cu126 index) | the CUDA build; PyPI's default on Windows is CPU-only |
+| `transformers==4.57.6`, `huggingface-hub==0.36.2` | the lyric model, pinned as a pair that works together |
+| `git+https://github.com/ace-step/ACE-Step.git` | the music model's code |
+| `flask`, `flask-cors` | the HTTP service the page calls |
+| `soundfile`, `librosa` | writing the wav and ACE's audio loading |
+
+| `models` | Size | Licence |
+| --- | --- | --- |
+| `ACE-Step/ACE-Step-v1-3.5B` — music, sings the lyrics | ≈7 GB | Apache-2.0 |
+| `Qwen/Qwen2.5-1.5B-Instruct` — writes the lyrics | ≈3.1 GB | Apache-2.0 |
 
 ```
-song_service\.venv\Scripts\python.exe install.py            # packages + weights
-song_service\.venv\Scripts\python.exe install.py --packages
-song_service\.venv\Scripts\python.exe install.py --weights
-song_service\.venv\Scripts\python.exe gpu_check.py          # confirms CUDA
+song_service\.venv\Scripts\python.exe install.py            # packages + both models
+song_service\.venv\Scripts\python.exe install.py --packages   # code only
+song_service\.venv\Scripts\python.exe install.py --weights    # models only
+song_service\.venv\Scripts\python.exe install.py --check      # report, change nothing
+song_service\.venv\Scripts\python.exe gpu_check.py            # confirms CUDA
 ```
+
+`--check` is the quick answer to "is everything there?": it names each package,
+each weight folder, and the installed torch/transformers versions, and exits
+non-zero if anything is missing. Both models are fetched from Hugging Face into
+`song_service/models/`, which is gitignored — they are package downloads, not
+repository content.
+
+One order matters: the lyrics model writes the words, then ACE-Step sings that
+exact text, so both are needed for a sung song.
 
 No CUDA toolkit install is needed on Windows: the driver supplies the runtime
 and the torch wheel carries its own CUDA libraries. Check `models.json` →

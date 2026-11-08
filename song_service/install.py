@@ -31,6 +31,26 @@ def run(command):
         raise SystemExit(f'failed: {" ".join(command)}')
 
 
+def install_entries(entries, label):
+    if not entries:
+        return
+    print(f'\n== {label} ==')
+    for entry in entries:
+        # A plain string is a normal PyPI/git install. An object carries its own
+        # index, which is how the CUDA build of torch is selected instead of
+        # silently getting the CPU one, and how pinned versions survive a mirror
+        # that would otherwise hand back something newer.
+        if isinstance(entry, str):
+            run([sys.executable, '-m', 'pip', 'install', entry])
+            continue
+        command = [sys.executable, '-m', 'pip', 'install']
+        if entry.get('index'):
+            command += ['--index-url', entry['index']]
+        command += entry.get('extra') or []
+        command.append(entry['spec'])
+        run(command)
+
+
 def install_packages(manifest):
     cuda = manifest.get('cuda') or {}
     if cuda:
@@ -39,24 +59,50 @@ def install_packages(manifest):
         print('  driver minimum:', cuda.get('driver_min', 'unknown'))
         print(' ', cuda.get('note', ''))
 
+    # One list for the whole service, plus any per-model extra.
+    install_entries(manifest.get('packages'), 'service packages')
     for model in manifest['models']:
-        packages = model.get('packages') or []
-        if not packages:
+        install_entries(model.get('packages'), f'packages for {model["name"]}')
+
+
+def check(manifest):
+    """Report what is installed and what is missing, without changing anything."""
+    import importlib.util
+
+    print('== packages ==')
+    imports = manifest.get('imports') or {}
+    missing = []
+    for label, module in imports.items():
+        found = importlib.util.find_spec(module) is not None
+        print(f'  {"ok " if found else "MISSING "} {label}  ({module})')
+        if not found:
+            missing.append(module)
+
+    print('\n== weights ==')
+    for model in manifest['models']:
+        target = os.path.normpath(os.path.join(ROOT, model['target']))
+        present = os.path.isdir(target) and any(os.scandir(target))
+        print(f'  {"ok " if present else "MISSING "} {model["name"]}  ({model.get("size_gb", "?")} GB)  {target}')
+        if not present:
+            missing.append(model['name'])
+
+    print('\n== versions ==')
+    for label in ('torch', 'transformers', 'huggingface_hub'):
+        module_name = imports.get(label)
+        if not module_name:
             continue
-        print(f'\n== packages for {model["name"]} ==')
-        for entry in packages:
-            # A plain string is a normal PyPI/git install. An object carries its
-            # own index, which is how the CUDA build of torch is selected
-            # instead of silently getting the CPU one.
-            if isinstance(entry, str):
-                run([sys.executable, '-m', 'pip', 'install', entry])
-                continue
-            command = [sys.executable, '-m', 'pip', 'install']
-            if entry.get('index'):
-                command += ['--index-url', entry['index']]
-            command += entry.get('extra') or []
-            command.append(entry['spec'])
-            run(command)
+        try:
+            module = __import__(module_name)
+            print(f'  {label} {getattr(module, "__version__", "unknown")}')
+        except Exception as exc:  # noqa: BLE001 - a broken import is the point
+            print(f'  {label} cannot import: {exc}')
+
+    if missing:
+        print('\nMissing:', ', '.join(missing))
+        print('Run: install.py')
+        return 1
+    print('\nEverything the service needs is installed.')
+    return 0
 
 
 def download_weights(manifest):
@@ -83,9 +129,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--packages', action='store_true', help='install packages only')
     parser.add_argument('--weights', action='store_true', help='download weights only')
+    parser.add_argument('--check', action='store_true', help='report what is installed, change nothing')
     args = parser.parse_args()
 
     manifest = load_manifest()
+    if args.check:
+        raise SystemExit(check(manifest))
     both = not args.packages and not args.weights
     if both or args.packages:
         install_packages(manifest)
