@@ -36,6 +36,31 @@ function Say([string]$text) {
     if (-not $Quiet) { Write-Host $text }
 }
 
+# Keep songsvc:// pointing at this copy of the launcher, every run. A moved
+# folder, a restored machine or a first start all end the same way: the site's
+# Start the AI button works without anyone running another script. Registering
+# twice is harmless, so it simply checks and repairs.
+function Ensure-Protocol {
+    $launcher = Join-Path $root 'tools\start_services.ps1'
+    if (-not (Test-Path $launcher)) { return }
+    $wanted = 'powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $launcher + '"'
+    $base = 'HKCU:\Software\Classes\songsvc'
+    try {
+        $current = (Get-ItemProperty -Path "$base\shell\open\command" -ErrorAction SilentlyContinue).'(default)'
+        if ($current -eq $wanted) { return }
+        New-Item -Path $base -Force | Out-Null
+        Set-ItemProperty -Path $base -Name '(default)' -Value 'URL:Song services launcher'
+        New-ItemProperty -Path $base -Name 'URL Protocol' -Value '' -PropertyType String -Force | Out-Null
+        New-Item -Path "$base\shell\open\command" -Force | Out-Null
+        Set-ItemProperty -Path "$base\shell\open\command" -Name '(default)' -Value $wanted
+        Say 'registered songsvc:// for the Start the AI button'
+    } catch {
+        Say "could not register songsvc://: $($_.Exception.Message)"
+    }
+}
+
+Ensure-Protocol
+
 function Answers([int]$port) {
     $code = & curl.exe -s -o NUL -w '%{http_code}' --max-time 3 "http://127.0.0.1:$port/health"
     return ($code -eq '200')
