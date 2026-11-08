@@ -897,16 +897,23 @@
             };
         }
 
+        // Socket.IO is the desktop app's channel for live search and download
+        // progress. The deployed copy of this page is served by Cloudflare,
+        // which has no such channel, so it asks the app on this machine instead
+        // of retrying against an origin that can never answer.
+        const LOCAL_APP = 'http://127.0.0.1:5001';
+        const ON_LOCAL_APP = /^(127\.0\.0\.1|localhost|\[::1\])$/.test(location.hostname);
         try {
             // Reconnect a few times: a server restart used to leave the page
             // stranded in bundled-index mode for as long as the tab was open.
             setConnection('connecting');
-            socket = io({
+            const options = {
                 timeout: 10000,
                 reconnection: true,
                 reconnectionAttempts: 5,
                 reconnectionDelay: 1500,
-            });
+            };
+            socket = ON_LOCAL_APP ? io(options) : io(LOCAL_APP, options);
             // First failure switches to the bundled index for good, so a static
             // host does not get hammered with /socket.io requests.
             // A restart makes the first attempts fail; only give up on the
