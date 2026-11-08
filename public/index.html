@@ -3592,15 +3592,8 @@
             'service-not-allowed': 'Speech recognition is blocked for this page. Check the browser microphone permissions.',
             'audio-capture': 'No microphone was found. Plug one in or check your sound settings.',
             'no-speech': 'I did not hear anything. Try speaking again.',
-            'network': 'The speech recognition service is unreachable. Check your connection and try again.',
-            // The transcript comes from whisper inside the desktop app, so a
-            // closed app is the common cause of voice search failing here.
-            'app-down': 'Voice search runs in the desktop app on this machine. Start it, then try again - or type your search instead.'
+            'network': 'Voice search could not reach a transcription service. Check your connection and try again.'
         };
-
-        // Set when the clip could not reach the app, so the browser engine's own
-        // failure is reported as the missing app rather than a broken connection.
-        let voiceNeedsApp = false;
 
         // Ask for the microphone once and keep the stream for recording.
         async function requestMicStream() {
@@ -3697,16 +3690,32 @@
 
             voiceTranscript.textContent = 'Transcribing...';
             try {
-                // The deployed page has no transcription route of its own: the
-                // Worker serves static files. The desktop app on this machine runs
-                // whisper for /api/transcribe, so ask it directly, the same way
-                // downloads and the song model are reached.
-                const response = await fetch(apiUrl('/api/transcribe'), {
-                    method: 'POST',
-                    headers: { 'Content-Type': type },
-                    body: blob
-                });
-                if (!response.ok) throw new Error('HTTP ' + response.status);
+                // Two places can transcribe: the desktop app on this machine
+                // (whisper, nothing uploaded) and the Worker, which runs Whisper
+                // on Cloudflare so voice works with no app running at all. The
+                // app is tried first because it is the faster of the two, and a
+                // closed app refuses the connection immediately.
+                const candidates = [];
+                if (window.DOWNLOAD_API) candidates.push(apiUrl('/api/transcribe'));
+                const edge = (location.origin + '/api/transcribe');
+                if (!candidates.includes(edge)) candidates.push(edge);
+
+                let response = null;
+                let failure = null;
+                for (const target of candidates) {
+                    try {
+                        const attempt = await fetchBounded(target, {
+                            method: 'POST',
+                            headers: { 'Content-Type': type },
+                            body: blob
+                        }, 30000);
+                        if (attempt.ok) { response = attempt; break; }
+                        failure = new Error('HTTP ' + attempt.status);
+                    } catch (err) {
+                        failure = err;
+                    }
+                }
+                if (!response) throw failure || new Error('no transcription service');
                 const data = await response.json();
                 const text = (data.text || '').trim();
                 if (!text) {
@@ -3719,16 +3728,12 @@
                 isVoiceSearch = true;
                 setTimeout(() => doSearch(), 300);
             } catch (err) {
-                // A fetch that fails outright means nothing is listening on 5001:
-                // the app is closed rather than the transcription having failed.
-                const unreachable = /Failed to fetch|NetworkError|Load failed/i.test(String((err && err.message) || ''));
-                voiceNeedsApp = unreachable;
-                console.log(unreachable
-                    ? 'The desktop app is not running here, trying the browser speech engine'
-                    : 'Server transcription unavailable, trying the browser engine:', (err && err.message) || err);
+                // Both transcriberies failed: the app on this machine and the one
+                // on the edge. Only the browser's own engine is left.
+                console.log('Transcription unavailable, trying the browser speech engine:', (err && err.message) || err);
                 if (!startBrowserRecognition()) {
                     voiceTranscript.textContent = '';
-                    showToast('error', 'Voice error', VOICE_ERRORS[unreachable ? 'app-down' : 'network'], { autoClose: 7000 });
+                    showToast('error', 'Voice error', VOICE_ERRORS['network'], { autoClose: 7000 });
                 }
             }
         }
@@ -3766,11 +3771,6 @@
                 const code = event.error || '';
                 // 'aborted' also fires for a normal stop(); don't nag about it.
                 if (code === 'aborted') return;
-                // The clip never reached the app, so its absence is the real reason.
-                if (voiceNeedsApp && code === 'network') {
-                    showToast('error', 'Voice error', VOICE_ERRORS['app-down'], { autoClose: 7000 });
-                    return;
-                }
                 showToast('error', 'Voice error', VOICE_ERRORS[code] || ('Voice search failed (' + (code || 'unknown') + ')'), { autoClose: 7000 });
             };
 
