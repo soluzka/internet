@@ -2008,9 +2008,20 @@
                 const local = base === '' || /(127\.0\.0\.1|localhost)/.test(base);
                 const wait = local ? 150000 : 8000;
                 let response;
+                let ticker = null;
                 try {
                     const status = document.getElementById('songStatus');
-                    if (status && local) status.textContent = 'Writing the lyrics on this machine...';
+                    if (status && local) {
+                        // The wait is real and it is the model loading; a counter
+                        // says it is working instead of looking hung.
+                        const began = Date.now();
+                        const paint = () => {
+                            status.textContent = 'Writing the lyrics on this machine... '
+                                + Math.round((Date.now() - began) / 1000) + 's';
+                        };
+                        paint();
+                        ticker = setInterval(paint, 1000);
+                    }
                     response = await fetchBounded(base + '/api/lyrics', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -2018,6 +2029,8 @@
                     }, wait);
                 } catch (err) {
                     continue;
+                } finally {
+                    if (ticker) clearInterval(ticker);
                 }
                 const isJson = (response.headers.get('content-type') || '').includes('application/json');
                 if (!response.ok || !isJson) continue;
@@ -2688,9 +2701,11 @@
 
         async function requestModelSong(summary, lyrics, seed) {
             const lyricText = lyrics.map(part => part.lines.join('\n')).join('\n\n');
-            // 45 s at 24 steps is a full verse-chorus-verse on one 8 GB card;
-            // asking for three minutes of audio made each song a coffee break.
-            const payload = { prompt: modelPrompt(summary, seed), lyrics: lyricText, seconds: 45, steps: 24 };
+            // 45 s at 16 steps is a full verse-chorus-verse on one 8 GB card.
+            // Every step is about eleven seconds here (the 8 GB card pages the
+            // weights in and out), so the 24 steps this used to ask for meant
+            // five minutes of silence before the first note of the real song.
+            const payload = { prompt: modelPrompt(summary, seed), lyrics: lyricText, seconds: 45, steps: 16 };
 
             // A model address pasted into the page is remembered in this
             // browser, so a tunnel URL that changes on every restart never
@@ -2708,9 +2723,25 @@
 
             let answer = null;
             window._modelNote = '';
+            // A song is minutes of work on this machine, so it has to outlive the
+            // page that asked for it: if the model is already singing one, listen
+            // to that instead of queueing another five-minute render behind it.
             for (const base of bases) {
-                answer = await postSong(base, payload);
+                let latest = null;
+                try {
+                    latest = await (await fetchBounded(base + '/api/song/latest', {}, 8000)).json();
+                } catch (err) {
+                    continue;
+                }
+                if (latest && latest.token && /^(queued|loading|generating)$/.test(latest.status || '')) {
+                    answer = { data: { token: latest.token }, base };
+                    window._modelNote = 'Picked up the song that was already rendering on this machine';
+                    break;
+                }
+            }
+            for (const base of bases) {
                 if (answer) break;
+                answer = await postSong(base, payload);
             }
             if (!answer) return null;
             if (answer.data.audio) return answer.data;
@@ -2770,7 +2801,12 @@
             if (genBtn) genBtn.hidden = true;
             if (btn) { btn.disabled = true; btn.textContent = 'Composing...'; }
 
-            stage.innerHTML = '<div class="gen-canvas" style="display:flex;align-items:center;justify-content:center;color:#8b9aa0;font-size:13px">Composing from the library...</div>';
+            // This line used to be the only thing on screen for the whole lyric
+            // wait - which is the better part of a minute when the language model
+            // has to be loaded again - because the placeholder carried no id and
+            // so nothing could ever update it. It is an id now: every stage below
+            // writes into it.
+            stage.innerHTML = '<div class="gen-canvas" style="display:flex;align-items:center;justify-content:center;text-align:center;padding:20px;color:#8b9aa0;font-size:13px"><div id="songStatus">Reading the library...</div></div>';
             panel.hidden = false;
             panel.innerHTML = '';
             overlay.classList.add('active');

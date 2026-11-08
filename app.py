@@ -463,6 +463,14 @@ def api_song():
     return _forward('/api/song', 'POST', request.get_json(silent=True) or {})
 
 
+@app.route('/api/song/latest', methods=['GET', 'OPTIONS'])
+def api_song_latest():
+    """Let a reloaded page pick up the song the model is already singing."""
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    return _forward('/api/song/latest')
+
+
 @app.route('/api/song/<token>', methods=['GET', 'OPTIONS'])
 def api_song_status(token):
     if request.method == 'OPTIONS':
@@ -475,6 +483,14 @@ def song_file(token):
     if request.method == 'OPTIONS':
         return ('', 204)
     return _forward('/song_file/' + str(token)[:64], stream=True)
+
+
+@app.route('/last_song', methods=['GET', 'OPTIONS'])
+def last_song_file():
+    """The last rendered song, even after the app was closed and opened again."""
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    return _forward('/last_song', stream=True)
 
 
 @app.route('/api/transcribe', methods=['POST'])

@@ -7,7 +7,9 @@ usefully run two), and reports progress while it works.
     GET  /health                 -> {"ok": true, "model": ..., "device": ...}
     POST /api/song   {prompt, lyrics, seconds, steps}  -> 202 {"token", "status"}
     GET  /api/song/<token>       -> {"status", "elapsed", "progress", "error"}
-    GET  /song_file/<token>      -> the rendered wav, then the job is deleted
+    GET  /api/song/latest        -> the newest job, so a reloaded page can join it
+    GET  /song_file/<token>      -> the rendered wav, kept for the panel's links
+    GET  /last_song              -> logs/last_song.wav, whatever was rendered last
 
 Nothing here is downloaded from a third party at request time: the checkpoint
 sits in ACE_CHECKPOINT and the weights were fetched once during setup.
@@ -60,6 +62,7 @@ _pipeline_lock = threading.Lock()
 _gpu_lock = threading.Lock()      # one generation at a time
 _jobs = {}
 _jobs_lock = threading.Lock()
+_latest_token = None   # the song the page asked for most recently
 
 
 _lyricist_instance = None
@@ -93,6 +96,23 @@ def _load_pipeline():
             cpu_offload=CPU_OFFLOAD,
         )
         return _pipeline
+
+
+def _prune_jobs():
+    """Forget all but the newest finished jobs, with their temp audio.
+
+    The page streams a finished song twice - once into the player and again
+    from "Save the song" - so the file cannot be deleted on the first read.
+    Keeping a couple of renders is a few megabytes; keeping every one is not.
+
+    """
+    with _jobs_lock:
+        done = [token for token, job in _jobs.items()
+                if job['status'] in ('complete', 'error') and token != _latest_token]
+        for token in done[:-1]:
+            job = _jobs.pop(token, None)
+            if job:
+                shutil.rmtree(job.get('tmp_dir') or '', ignore_errors=True)
 
 
 def _set(token, **fields):
@@ -392,14 +412,20 @@ def api_song():
         steps = DEFAULT_STEPS
     steps = max(8, min(80, steps))
 
-    with _jobs_lock:
-        running = sum(1 for job in _jobs.values()
-                      if job['status'] in ('loading', 'generating'))
-    if running >= 2:
-        return jsonify({'error': 'The GPU is busy with another song. Try again in a moment.'}), 429
-
+    global _latest_token
     token = uuid.uuid4().hex
     seed = int(data.get('seed') or (uuid.uuid4().int % 1000000))
+    with _jobs_lock:
+        # One GPU, one song. A second click while a song is still rendering - or
+        # a page that was reloaded and asked again - joins the song in flight
+        # instead of queueing another multi-minute render behind it.
+        for running_token, job in _jobs.items():
+            if job['status'] in ('queued', 'loading', 'generating'):
+                return jsonify({'token': running_token, 'status': job['status'],
+                                'seconds': job['seconds'], 'reused': True}), 202
+
+    # Outside the lock: _prune_jobs takes it itself.
+    _prune_jobs()
     with _jobs_lock:
         _jobs[token] = {
             'status': 'queued', 'progress': 0.0, 'error': '',
@@ -407,11 +433,35 @@ def api_song():
             'prompt': prompt, 'seconds': seconds,
             'created': time.time(),
         }
+        _latest_token = token
 
     threading.Thread(target=_run_job, args=(token, prompt, lyrics, seconds, steps, seed),
                      daemon=True).start()
     return jsonify({'token': token, 'status': 'queued', 'prompt': prompt,
                     'seconds': seconds, 'steps': steps}), 202
+
+
+@app.route('/api/song/latest')
+def api_song_latest():
+    """The newest job, so a reloaded or restarted page can join the song.
+
+    A song takes minutes on one card. Without this the token only existed in
+    the page's memory: a reload, a closed tab or a restarted app left the model
+    singing into nothing, and the page looked like it had never run it.
+
+    """
+    with _jobs_lock:
+        job = _jobs.get(_latest_token) if _latest_token else None
+        if job is None:
+            return jsonify({'error': 'No song has been requested yet'}), 404
+        return jsonify({
+            'token': _latest_token,
+            'status': job['status'],
+            'progress': job['progress'],
+            'error': job['error'],
+            'elapsed': round(time.time() - job['created'], 1),
+            'seconds': job['seconds'],
+        })
 
 
 @app.route('/api/song/<token>')
@@ -442,18 +492,26 @@ def song_file(token):
         return jsonify({'error': 'File not found or expired'}), 404
 
     label = re.sub(r'[^a-z0-9]+', '-', prompt.lower())[:40].strip('-') or 'song'
-    response = send_file(path, as_attachment=True,
-                         download_name=f'library-song-{label}.wav',
-                         mimetype='audio/wav')
+    # The job stays until a later one replaces it: the page reads this file once
+    # for the player and again when "Save the song" is clicked, and a reloaded
+    # page may ask for it a third time.
+    return send_file(path, as_attachment=True,
+                     download_name=f'library-song-{label}.wav',
+                     mimetype='audio/wav')
 
-    @response.call_on_close
-    def cleanup():
-        with _jobs_lock:
-            finished = _jobs.pop(token, None)
-        if finished:
-            shutil.rmtree(finished.get('tmp_dir') or '', ignore_errors=True)
 
-    return response
+@app.route('/last_song')
+def last_song():
+    """The last rendered song, saved next to the logs.
+
+    A stable address for the one thing that matters after a restart: the audio
+    the model actually produced.
+    """
+    path = os.path.join(HERE, 'logs', 'last_song.wav')
+    if not os.path.exists(path):
+        return jsonify({'error': 'Nothing has been rendered yet'}), 404
+    return send_file(path, as_attachment=True, download_name='last-song.wav',
+                     mimetype='audio/wav')
 
 
 if __name__ == '__main__':
