@@ -70,13 +70,22 @@ _lyricist_lock = threading.Lock()
 
 
 def _lyricist():
-    """One language model for the process, loaded on first use."""
+    """One language model for the process, loaded on first use.
+
+    It runs on the CPU, and that is deliberate. The 8 GB card is spoken for by
+    ACE-Step (about 7.9 GB), so loading Qwen onto it meant paging 3 GB into the
+    ~300 MB left over: the lyric wait grew past a minute, and a song rendering
+    at the same time slowed from 11 s a step to 23. On the CPU it never touches
+    the card, so neither the lyrics nor the render wait for the other.
+    LYRICS_DEVICE=cuda puts it back on the GPU for a bigger card.
+    """
     global _lyricist_instance
     with _lyricist_lock:
         if _lyricist_instance is None:
             from lyrics import Lyricist, lyrics_model_id, load_manifest
 
-            _lyricist_instance = Lyricist(lyrics_model_id(load_manifest()))
+            device = os.environ.get('LYRICS_DEVICE') or 'cpu'
+            _lyricist_instance = Lyricist(lyrics_model_id(load_manifest()), device=device)
         return _lyricist_instance
 
 
@@ -154,10 +163,11 @@ threading.Thread(target=_warm_lyrics, daemon=True).start()
 
 
 def _release_lyricist():
-    """Give the lyric model's VRAM back before the 3.5B music model loads.
+    """Give the lyric model's memory back before the 3.5B music model loads.
 
-    Both cannot sit in 8 GB at once: Qwen takes about 3 GB, ACE-Step about 7.9,
-    and trying to hold both is what wedged the service.
+    It lives in system RAM now, not VRAM, but ACE-Step pages its 7.9 GB of
+    weights through RAM too, so the 6 GB Qwen holds is still worth freeing
+    before every render.
     """
     global _lyricist_instance
     with _lyricist_lock:
