@@ -1,12 +1,14 @@
 """Write song lyrics with a small language model, on this machine.
 
 The page asks for lyrics before it asks for music, so this runs on the GPU (or
-CPU if CUDA is unavailable) and returns plain lines.
+CPU if CUDA is unavailable).
 
-    song_service\\.venv\\Scripts\\python lyrics.py --genre techno --subject "bass, night, city"
+    song_service\\.venv\\Scripts\\python lyrics.py --genre techno
 
-The model is chosen in models.json under "lyrics". Nothing here is templated:
-the lines are generated, and the seed changes them.
+The model is a songwriter, not a word shuffler: it is asked for a whole song in
+sections, it must repeat its chorus word for word, and it is told to write its
+own lines rather than pasting the phrases it was given. The phrases from the
+videos are only there to suggest a theme.
 """
 
 import argparse
@@ -20,33 +22,50 @@ import threading
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
 SYSTEM_PROMPT = (
-    'You are a songwriter. You write lyrics that could be sung over the music '
-    'you are told about. You answer with lines of lyrics only, never with prose, '
-    'headings or explanations.'
+    'You are a songwriter and lyricist with a voice of your own. You write '
+    'complete, singable song lyrics that could be recorded today. You never '
+    'explain yourself, never describe the process, and never mention where your '
+    'ideas came from. You answer with the lyric only.'
 )
 
-USER_PROMPT = (
-    'Write {count} lines of lyrics for a {genre} song.\n'
-    'Write from this stance: {angle}.\n'
-    'Here are phrases taken from song titles and descriptions. Use them as raw '
-    'material: pick the images and sounds that feel like weather, places, people, '
-    'machines, or feelings, and write your own lines around them. Mix them up, '
-    'change the wording, invent what is missing.\n'
-    'Phrases: {subject}.\n'
+SONG_PROMPT = (
+    'Write the complete lyric of a new {genre} song.\n'
+    '\n'
+    'You choose what it is about. Pick one situation and let the whole song '
+    'live in it.{theme_hint}\n'
+    'The singer: {angle}\n'
+    'Mood: {mood}\n'
+    '\n'
+    'Use exactly this shape. Each tag sits on its own line, then its lines:\n'
+    '[verse 1]\n'
+    '[chorus]\n'
+    '[verse 2]\n'
+    '[chorus]\n'
+    '[bridge]\n'
+    '[chorus]\n'
+    '\n'
+    'How to write it:\n'
+    '- Choose one idea for this song - one place, one night, one thing that '
+    'happened - and stay with it from the first line to the last.\n'
+    '- The chorus is the same words every time it appears, word for word. It is '
+    'the part someone would sing back.\n'
+    '- The verses move: in verse one something is happening, in verse two '
+    'something has changed. The bridge says the thing the verses avoided.\n'
+    '- Your own language, your own images. Nobody has given you words to reuse: '
+    'invent the details - a name, an object, a place, a time - that only this '
+    'song has.\n'
+    '- Concrete things a person can see, do or lose. No metaphors about music, '
+    'technology, the internet or collections of anything.\n'
+    '- Four lines per verse, four per chorus, two for the bridge. Under twelve '
+    'words a line. Do not force rhymes.\n'
+    '- Singable rhythm: short lines, plain words, one thought per line.\n'
+    '- No title, no numbering, no notes, no quotation marks. Only the tags and '
+    'the lines.\n'
     '{avoid}'
-    'Make every line a real sentence that a person could sing: a thing seen, done '
-    'or felt, not a pile of nouns.\n'
-    'Rules:\n'
-    '- Never mention a library, a database, a collection, a playlist, a search, '
-    'the internet, videos, tracks, an index or a count of anything. If you are '
-    'tempted to describe where the words came from, write about the night instead.\n'
-    '- Everyday concrete images, not metaphors about music or technology.\n'
-    '- One short repeated line that could work as the hook.\n'
-    '- Present tense, first or second person.\n'
-    '- Under twelve words per line, no rhyme forced into place.\n'
-    '- No headings, no numbering, no quotes, no explanation.\n'
-    'Return only the lines, one per line.'
 )
+
+TAG = re.compile(r'^\s*[\[\(]\s*(verse\s*\d|chorus|hook|bridge|pre[-\s]?chorus|'
+                 r'intro|outro|refrain)\s*[\]\)]\s*:?\s*$', re.I)
 
 # Lines that describe the collection instead of a life are thrown away rather
 # than shown as lyrics.
@@ -56,6 +75,15 @@ BANNED = re.compile(
     r'tracks?|videos?|clips?|uploads?|channels?|subscri\w+|results?)\b',
     re.I,
 )
+
+MOODS = [
+    'tired and honest, played late',
+    'warm but restless',
+    'cold air, steady nerve',
+    'hopeful underneath',
+    'sharp and plainspoken',
+    'quiet, then loud',
+]
 
 
 def load_manifest():
@@ -108,22 +136,28 @@ class Lyricist:
                     self._build()
         return self._pipeline
 
-    def write(self, genre='electronic music', subject='', seed=0, lines=14, corpus=None, angle='', avoid=None):
+    def write_song(self, genre='electronic music', subject='', seed=0, corpus=None,
+                   angle='', avoid=None):
+        """Return {'sections': [{'section', 'lines'}], 'lines': [...]}."""
         generator = self.pipeline
-        material = ', '.join(corpus) if corpus else (subject or 'night, movement, weather')
+        # The videos are context, not source material. At most a couple of words
+        # are offered as a hint, and the model is free to ignore them: feeding it
+        # phrase lists is what made every song the same words rearranged.
+        hint_words = [str(item).strip() for item in (corpus or []) if str(item).strip()][:3]
+        theme_hint = ''
+        if hint_words and not subject:
+            theme_hint = ' If it helps, these are near the mood: ' + ', '.join(hint_words) + '.'
         avoid = [str(line).strip() for line in (avoid or []) if str(line).strip()][-14:]
         avoid_block = ''
         if avoid:
-            avoid_block = ('Do not repeat these lines or anything close to them:\n'
-                           + '\n'.join(avoid) + '\n')
-        # The line count and the stance move with the seed too, so two songs do
-        # not come back with the same shape.
-        count = 12 + (abs(seed) % 5)
-        prompt = USER_PROMPT.format(
+            avoid_block = ('Do not repeat these lines or anything close to them, '
+                           'and do not rhyme with them:\n' + '\n'.join(avoid) + '\n')
+
+        prompt = SONG_PROMPT.format(
             genre=genre or 'electronic music',
-            subject=material[:1200],
-            count=count,
+            theme_hint=theme_hint[:200],
             angle=angle or 'first person, present tense',
+            mood=MOODS[abs(seed) % len(MOODS)],
             avoid=avoid_block,
         )
         messages = [
@@ -133,11 +167,13 @@ class Lyricist:
         random.seed(seed)
         output = generator(
             messages,
-            max_new_tokens=420,
+            max_new_tokens=560,
             do_sample=True,
-            temperature=0.95,
+            temperature=0.92,
             top_p=0.92,
-            repetition_penalty=1.08,
+            top_k=60,
+            repetition_penalty=1.12,
+            no_repeat_ngram_size=3,
         )
         text = ''
         result = output[0] if output else {}
@@ -146,7 +182,104 @@ class Lyricist:
             text = generated[-1].get('content', '')
         elif isinstance(generated, str):
             text = generated
-        return clean_lines(text, count, avoid)
+
+        sections = parse_song(text, avoid)
+        lines = [line for part in sections for line in part['lines']]
+        return {'sections': sections, 'lines': lines}
+
+    # Kept for older callers: the flat list of lines.
+    def write(self, genre='electronic music', subject='', seed=0, lines=14, corpus=None,
+              angle='', avoid=None):
+        return self.write_song(genre, subject, seed, corpus=corpus, angle=angle,
+                               avoid=avoid)['lines'][:lines]
+
+
+def _section_name(raw):
+    lowered = re.sub(r'\s+', ' ', raw.strip().lower())
+    if 'chorus' in lowered or lowered in ('hook', 'refrain'):
+        if 'pre' in lowered:
+            return 'Pre-chorus'
+        return 'Chorus'
+    if 'bridge' in lowered:
+        return 'Bridge'
+    if 'intro' in lowered:
+        return 'Intro'
+    if 'outro' in lowered:
+        return 'Outro'
+    match = re.search(r'(\d+)', lowered)
+    return 'Verse ' + (match.group(1) if match else '1')
+
+
+def _clean_line(raw):
+    line = re.sub(r'^\s*(?:\d+[.)]|[-*\u2022])\s*', '', raw).strip()
+    line = line.strip('"\u2018\u2019\u201c\u201d`\' ')
+    if not line or line.endswith(':'):
+        return ''
+    if len(line.split()) > 14:
+        return ''
+    if line.lower().startswith(('here are', 'sure', 'lyrics', 'note', 'title')):
+        return ''
+    if BANNED.search(line):
+        return ''
+    return line
+
+
+def parse_song(text, avoid=None):
+    """Turn the model's answer into sections, with one chorus repeated verbatim."""
+    avoid_norm = [re.sub(r'[^a-z0-9 ]', '', str(line).lower()) for line in (avoid or [])]
+    sections = []
+    current = None
+    for raw in str(text).splitlines():
+        tag = TAG.match(raw)
+        if tag:
+            current = {'section': _section_name(tag.group(1)), 'lines': []}
+            sections.append(current)
+            continue
+        line = _clean_line(raw)
+        if not line:
+            continue
+        normal = re.sub(r'[^a-z0-9 ]', '', line.lower())
+        if any(_too_similar(normal, other) for other in avoid_norm):
+            continue
+        if current is None:
+            current = {'section': 'Verse 1', 'lines': []}
+            sections.append(current)
+        if current['lines'] and current['lines'][-1] == line:
+            continue
+        current['lines'].append(line)
+
+    sections = [part for part in sections if part['lines']]
+
+    # No tags in the answer: shape the lines into verses and a chorus anyway, so
+    # the page still gets a song with a repeatable hook.
+    if len(sections) < 2:
+        pool = []
+        for raw in str(text).splitlines():
+            line = _clean_line(raw)
+            if line and line not in pool:
+                pool.append(line)
+        if len(pool) < 6:
+            return []
+        quarter = max(2, len(pool) // 4)
+        blocks = [pool[0:quarter], pool[quarter:quarter * 2],
+                  pool[quarter * 2:quarter * 3]]
+        return [
+            {'section': 'Verse 1', 'lines': blocks[0]},
+            {'section': 'Chorus', 'lines': blocks[1]},
+            {'section': 'Verse 2', 'lines': blocks[2]},
+            {'section': 'Chorus', 'lines': blocks[1]},
+        ]
+
+    # The chorus has to be the same words each time: take the first one and use
+    # it wherever a chorus appears.
+    chorus = next((part['lines'] for part in sections if part['section'] == 'Chorus'), None)
+    if chorus:
+        for part in sections:
+            if part['section'] == 'Chorus':
+                part['lines'] = list(chorus)
+        if not any(part['section'] == 'Chorus' for part in sections[1:]):
+            sections.insert(1, {'section': 'Chorus', 'lines': list(chorus)})
+    return sections
 
 
 def clean_lines(text, wanted=14, avoid=None):
@@ -154,29 +287,16 @@ def clean_lines(text, wanted=14, avoid=None):
     avoid = [re.sub(r'[^a-z0-9 ]', '', str(line).lower()) for line in (avoid or [])]
     lines = []
     for raw in str(text).splitlines():
-        line = re.sub(r'^\s*(?:\d+[.)]|[-*\u2022])\s*', '', raw).strip()
-        line = line.strip('"\'` ')
-        if not line or line.endswith(':'):
+        line = _clean_line(raw)
+        if not line:
             continue
-        if len(line.split()) > 14:
-            continue
-        if line.lower().startswith(('here are', 'sure', 'lyrics', 'note')):
-            continue
-        if BANNED.search(line):
-            continue
-        # A line that closely matches one from the last song is a repeat, not a
-        # new lyric, so it is dropped rather than shown twice.
         normal = re.sub(r'[^a-z0-9 ]', '', line.lower())
         if any(_too_similar(normal, other) for other in avoid):
             continue
-        lines.append(line)
-    # Drop an echoed prompt or a repeated line run.
-    unique = []
-    for line in lines:
-        if unique and unique[-1] == line:
+        if lines and lines[-1] == line:
             continue
-        unique.append(line)
-    return unique[:wanted]
+        lines.append(line)
+    return lines[:wanted]
 
 
 def _too_similar(line, other):
@@ -201,9 +321,12 @@ def main():
     model_id = args.model or lyrics_model_id(manifest)
     print(f'model: {model_id}', file=sys.stderr)
     lyricist = Lyricist(model_id)
-    lines = lyricist.write(args.genre, args.subject, args.seed)
-    for line in lines:
-        print(line)
+    song = lyricist.write_song(args.genre, args.subject, args.seed)
+    for part in song['sections']:
+        print()
+        print('[' + part['section'] + ']')
+        for line in part['lines']:
+            print(line)
 
 
 if __name__ == '__main__':

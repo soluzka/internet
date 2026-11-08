@@ -1969,12 +1969,13 @@
         // the built-in verses, so a plain static copy still has lyrics.
         async function aiLyrics(summary, seed) {
             const genre = (summary.genres && summary.genres[0] && summary.genres[0].name) || 'electronic music';
-            // Material gathered from the listings themselves: words and two-word
-            // phrases from their titles and descriptions. The model writes from
-            // this, it is not allowed to write about it.
+            // No phrase corpus any more: sending the model lists of words from
+            // the listings is exactly what produced the same lines rearranged.
+            // The genre from the search is the only context, and the model
+            // decides for itself what the song is about.
             const avoid = window._lastLyricLines || [];
-            const corpus = lyricCorpus(seed, 36);
-            const subject = corpus.length ? corpus.join(', ') : 'rain, machines, distance, night';
+            const corpus = [];
+            const subject = '';
             // A different stance per seed, so the songs are not the same song with
             // different words.
             const angles = [
@@ -1993,23 +1994,40 @@
             if (window.SONG_API) bases.push(String(window.SONG_API).replace(/\/+$/, ''));
 
             for (const base of bases) {
+                // The model on this machine has to wake up and write, which is
+                // tens of seconds the first time; eight seconds was abandoning a
+                // perfectly healthy request and falling back to template lines.
+                const local = base === '' || /(127\.0\.0\.1|localhost)/.test(base);
+                const wait = local ? 150000 : 8000;
                 let response;
                 try {
+                    const status = document.getElementById('songStatus');
+                    if (status && local) status.textContent = 'Writing the lyrics on this machine...';
                     response = await fetchBounded(base + '/api/lyrics', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ genre, subject, corpus, angle, seed, avoid }),
-                    }, 8000);
+                    }, wait);
                 } catch (err) {
                     continue;
                 }
                 const isJson = (response.headers.get('content-type') || '').includes('application/json');
                 if (!response.ok || !isJson) continue;
                 const data = await response.json().catch(() => ({}));
-                const lines = Array.isArray(data.lines)
-                    ? data.lines.map(item => String(item).trim()).filter(Boolean)
+                const sections = Array.isArray(data.sections)
+                    ? data.sections
+                        .map(part => ({
+                            section: String(part.section || 'Verse 1'),
+                            lines: Array.isArray(part.lines)
+                                ? part.lines.map(line => String(line).trim()).filter(Boolean)
+                                : [],
+                        }))
+                        .filter(part => part.lines.length)
                     : [];
-                if (lines.length >= 8) return lines;
+                const total = sections.reduce((sum, part) => sum + part.lines.length, 0);
+                if (sections.length >= 2 && total >= 8) {
+                    return { sections, model: data.model || 'the local lyric model' };
+                }
             }
             return null;
         }
@@ -2027,6 +2045,26 @@
             'official', 'audio', 'lyric', 'lyrics', 'full', 'clip', 'clips', 'short', 'shorts',
             'trailer', 'teaser', 'part', 'episode', 'live', 'new', 'hq', 'hd']);
 
+        // Transcripts, when tools/transcribe_library.py has produced them: the
+        // words actually sung in the videos, which is what the lyrics should be
+        // built from rather than from titles.
+        async function loadTranscripts() {
+            if (window._transcripts !== undefined) return window._transcripts;
+            try {
+                const response = await fetch('data/transcripts.json', { cache: 'no-store' });
+                window._transcripts = response.ok ? await response.json() : {};
+            } catch (err) {
+                window._transcripts = {};
+            }
+            return window._transcripts;
+        }
+
+        function transcriptFor(url) {
+            const map = window._transcripts || {};
+            const entry = map[url] || map[String(url || '').replace(/\?.*$/, '')];
+            return entry && entry.t ? String(entry.t) : '';
+        }
+
         function lyricCorpus(seed, limit) {
             const results = window._lastResults || [];
             const phrases = [];
@@ -2040,7 +2078,9 @@
                 phrases.push(phrase);
             };
             results.forEach(result => {
-                const text = `${result.title || ''} ${result.description || ''}`
+                // The transcript when there is one, otherwise the listing text.
+                const transcript = transcriptFor(result.url);
+                const text = (transcript || `${result.title || ''} ${result.description || ''}`)
                     .toLowerCase()
                     .replace(/[^a-z0-9' ]+/g, ' ');
                 const words = text.split(/\s+/)
@@ -2072,15 +2112,33 @@
             return LYRIC_FORMS[Math.abs(seed) % LYRIC_FORMS.length];
         }
 
-        function applyAILyrics(lyrics, lines) {
-            // Keep the sections the arrangement already has, and pour the written
-            // lines into them.
-            let index = 0;
+        // Which part of the written song a section of the arrangement gets.
+        function lyricRole(name) {
+            const lowered = String(name || '').toLowerCase();
+            if (lowered.includes('chorus') || lowered.includes('hook')) return 'chorus';
+            if (lowered.includes('bridge')) return 'bridge';
+            if (/verse\s*2|verse\s*two/.test(lowered)) return 'verse2';
+            return 'verse1';
+        }
+
+        function applyAILyrics(lyrics, written) {
+            // The model wrote a whole song; give each section of the arrangement
+            // the part it belongs to, so the chorus is sung where the chorus is
+            // and verse two is not just the next four lines.
+            const byRole = {};
+            (written.sections || []).forEach(part => {
+                const role = lyricRole(part.section);
+                if (!byRole[role] && part.lines.length) byRole[role] = part.lines;
+            });
+            const fallback = byRole.verse1 || byRole.chorus || [];
             return lyrics.map(part => {
-                const taken = lines.slice(index, index + part.lines.length);
-                index += part.lines.length;
-                if (taken.length < part.lines.length) return part;
-                return { section: part.section, lines: taken, ai: true };
+                const source = byRole[lyricRole(part.section)] || fallback;
+                if (!source.length) return part;
+                const lines = [];
+                for (let i = 0; i < part.lines.length; i++) {
+                    lines.push(source[i % source.length]);
+                }
+                return { section: part.section, lines, ai: true };
             });
         }
 
@@ -2618,7 +2676,9 @@
 
         async function requestModelSong(summary, lyrics, seed) {
             const lyricText = lyrics.map(part => part.lines.join('\n')).join('\n\n');
-            const payload = { prompt: modelPrompt(summary, seed), lyrics: lyricText, seconds: 60 };
+            // 45 s at 24 steps is a full verse-chorus-verse on one 8 GB card;
+            // asking for three minutes of audio made each song a coffee break.
+            const payload = { prompt: modelPrompt(summary, seed), lyrics: lyricText, seconds: 45, steps: 24 };
 
             const bases = [''];
             if (/^(127\.0\.0\.1|localhost)$/.test(location.hostname)) {
@@ -2638,13 +2698,19 @@
 
             // A job: the local model reports progress while the GPU works.
             const token = answer.data.token;
-            // About a minute: long enough for a loaded model to answer, short
-            // enough that a cold or busy one does not hold the page on "composing".
-            for (let attempt = 0; attempt < 30; attempt++) {
+            // Loading a 3.5B model and rendering a minute of song on one 8 GB
+            // card is minutes of work, not seconds. Wait as long as it keeps
+            // making progress, and give up only when it has stalled: the old
+            // 60-second cap guaranteed a fallback to the silent instrument band.
+            const started = Date.now();
+            const deadline = started + 20 * 60 * 1000;
+            let lastChange = Date.now();
+            let lastStatus = '';
+            while (Date.now() < deadline) {
                 await new Promise(resolve => setTimeout(resolve, 2000));
                 let job;
                 try {
-                    job = await (await fetchBounded(answer.base + '/api/song/' + token, {}, 15000)).json();
+                    job = await (await fetchBounded(answer.base + '/api/song/' + token, {}, 20000)).json();
                 } catch (err) {
                     continue;
                 }
@@ -2654,8 +2720,19 @@
                 if (job.status === 'error') {
                     throw new Error(job.error || 'the model failed');
                 }
+                if (job.status !== lastStatus) {
+                    lastStatus = job.status;
+                    lastChange = Date.now();
+                } else if (Date.now() - lastChange > 5 * 60 * 1000) {
+                    throw new Error('the model stopped responding while composing');
+                }
                 const status = document.getElementById('songStatus');
-                if (status) status.textContent = `Composing on this machine... ${Math.round(job.elapsed || 0)}s (${job.status})`;
+                if (status) {
+                    const seconds = Math.round((Date.now() - started) / 1000);
+                    status.textContent = job.status === 'loading'
+                        ? `Loading the model on this machine... ${seconds}s`
+                        : `Composing and singing on this machine... ${seconds}s`;
+                }
             }
             throw new Error('the model took too long to finish');
         }
@@ -2686,9 +2763,13 @@
                 window._nextSongSeed = undefined;
                 const summary = songSource();
                 let lyrics = libraryLyrics(summary, seed);
+                let lyricSource = 'written by the page';
                 try {
                     const written = await aiLyrics(summary, seed);
-                    if (written) lyrics = applyAILyrics(lyrics, written);
+                    if (written) {
+                        lyrics = applyAILyrics(lyrics, written);
+                        lyricSource = 'written by ' + written.model;
+                    }
                 } catch (err) {}
                 // Remembered so the next song avoids these exact lines.
                 window._lastLyricLines = lyrics.reduce((all, part) => all.concat(part.lines), []);
@@ -2740,7 +2821,7 @@
                 note.textContent = (summary.genres.length
                     ? `Built from ${summary.label}, shaped by what dominates it: ${summary.genres.map(genre => `${genre.name} (${genre.count})`).join(', ')}. `
                     : `Built from ${summary.label}. `) +
-                    `Rendered and mastered in ${took}s by ${origin}.`
+                    `Rendered and mastered in ${took}s by ${origin}. Lyrics ${lyricSource}.`
                         + (window._modelNote ? ` ${window._modelNote}.` : '')
                         + (modelError ? ` (model unavailable: ${modelError})` : '');
 

@@ -168,6 +168,83 @@ def _recognize_wav(wav_path):
     return text
 
 
+# ---------------------------------------------------------------------------
+# The local AI: forwarded to song_service/app.py on this machine.
+#
+# The page asks its own origin first, so these routes must exist here - without
+# them a POST fell through to the static catch-all and came back 405, and the
+# page quietly used the instrument-only fallback instead of the real model.
+# Forwarding keeps the page same-origin, so there is no CORS or preflight.
+# ---------------------------------------------------------------------------
+SONG_SERVICE = os.environ.get('SONG_SERVICE_URL', 'http://127.0.0.1:8090').rstrip('/')
+SONG_TIMEOUT = float(os.environ.get('SONG_PROXY_TIMEOUT', '1800'))
+
+
+def _forward(path, method='GET', payload=None, stream=False):
+    """One request to the song service, as a Flask response."""
+    import urllib.error
+    import urllib.request
+
+    data = None
+    headers = {}
+    if payload is not None:
+        import json as _json
+
+        data = _json.dumps(payload).encode()
+        headers['Content-Type'] = 'application/json'
+
+    upstream = urllib.request.Request(SONG_SERVICE + path, data=data,
+                                      headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(upstream, timeout=SONG_TIMEOUT) as answer:
+            body = answer.read()
+            content_type = answer.headers.get('Content-Type', 'application/json')
+            status = answer.status
+    except urllib.error.HTTPError as exc:
+        body = exc.read()
+        content_type = exc.headers.get('Content-Type', 'application/json')
+        status = exc.code
+    except Exception as exc:  # noqa: BLE001 - the service being down is normal
+        logger.warning('song service request failed: %s', exc)
+        return jsonify({'error': 'The local AI service is not running. Start '
+                                 'song_service/app.py, then try again.'}), 503
+
+    if stream and status == 200:
+        from io import BytesIO
+
+        return send_file(BytesIO(body), mimetype=content_type,
+                         as_attachment=False, download_name='song.wav')
+    return app.response_class(body, status=status, mimetype=content_type)
+
+
+@app.route('/api/lyrics', methods=['POST', 'OPTIONS'])
+def api_lyrics():
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    return _forward('/api/lyrics', 'POST', request.get_json(silent=True) or {})
+
+
+@app.route('/api/song', methods=['POST', 'OPTIONS'])
+def api_song():
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    return _forward('/api/song', 'POST', request.get_json(silent=True) or {})
+
+
+@app.route('/api/song/<token>', methods=['GET', 'OPTIONS'])
+def api_song_status(token):
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    return _forward('/api/song/' + str(token)[:64])
+
+
+@app.route('/song_file/<token>', methods=['GET', 'OPTIONS'])
+def song_file(token):
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    return _forward('/song_file/' + str(token)[:64], stream=True)
+
+
 @app.route('/api/transcribe', methods=['POST'])
 def api_transcribe():
     audio = request.get_data()

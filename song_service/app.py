@@ -115,6 +115,24 @@ def _prompt_for(genres, words, bpm, key):
     return ', '.join(parts)
 
 
+def _warm_lyrics():
+    """Load the lyric model at startup, not on the first click.
+
+    Loading takes tens of seconds. Doing it here means the page's first lyric
+    request comes back quickly instead of spending that time on "Composing...".
+    The model is released again before a song job loads ACE-Step, so the two
+    still never share the 8 GB of VRAM.
+    """
+    try:
+        _lyricist()
+        print('lyric model ready', flush=True)
+    except Exception:  # noqa: BLE001 - a failed warm-up must not stop the service
+        traceback.print_exc()
+
+
+threading.Thread(target=_warm_lyrics, daemon=True).start()
+
+
 def _release_lyricist():
     """Give the lyric model's VRAM back before the 3.5B music model loads.
 
@@ -143,42 +161,93 @@ def _release_lyricist():
     print('released the lyric model to free VRAM', flush=True)
 
 
-def _write_audio(result, out_path):
-    """Write whatever the pipeline returned, without needing torchcodec."""
-    data = None
-    sample_rate = 48000
-    if isinstance(result, dict):
-        try:
-            sample_rate = int(result.get('sample_rate') or result.get('sr') or 48000)
-        except (TypeError, ValueError):
-            sample_rate = 48000
-        for key in ('audio', 'target_wavs', 'wav', 'samples'):
-            if result.get(key) is not None:
-                data = result[key]
-                break
+def _write_samples(target_wav, out_path, sample_rate):
+    """Write a decoded waveform without depending on libsndfile.
+
+    ACE-Step saves through torchaudio, and torchaudio 2.9 dropped its soundfile
+    and sox backends: every save now goes through torchcodec, which is not
+    installed, so generation ended in "TorchCodec is required for
+    save_with_torchcodec" after the whole expensive diffusion had run. Writing
+    the samples ourselves costs nothing and needs no extra package.
+    """
+    import numpy as np
+
+    samples = target_wav
+    if hasattr(samples, 'detach'):
+        samples = samples.detach().float().cpu().numpy()
+    if isinstance(samples, (list, tuple)):
+        samples = samples[0] if samples else None
+        if samples is None:
+            raise RuntimeError('the model returned no waveform')
+        if hasattr(samples, 'detach'):
+            samples = samples.detach().float().cpu().numpy()
+    samples = np.asarray(samples, dtype=np.float32).squeeze()
+    if samples.ndim == 0 or samples.size == 0:
+        raise RuntimeError('the model returned an empty waveform')
+    print(f'waveform: shape={samples.shape} peak={float(np.abs(samples).max()):.3f}', flush=True)
+
+    # The decoder hands over (channels, frames). Getting this wrong writes two
+    # samples and produces a 48-byte "song" - silent, no vocal, which is exactly
+    # what happened before.
+    if samples.ndim == 1:
+        frames = samples[:, None]
+    elif samples.shape[0] <= 4 and samples.shape[1] > samples.shape[0]:
+        frames = samples.T
     else:
-        data = result
+        frames = samples
+    channels = frames.shape[1]
 
-    if data is None:
-        return False
-    try:
-        import numpy as np
-        import soundfile as sf
+    # Stdlib writer first: libsndfile in this environment refuses the file with
+    # "Format not recognised" even when the format is given explicitly, and the
+    # wave module cannot fail that way.
+    import wave
 
-        if hasattr(data, 'detach'):
-            data = data.detach().float().cpu().numpy()
-        if isinstance(data, (list, tuple)):
-            data = data[0] if data else None
-        if data is None:
-            return False
-        samples = np.asarray(data).squeeze()
-        if samples.ndim == 0 or samples.size == 0:
-            return False
-        sf.write(out_path, samples, sample_rate)
-        return True
-    except Exception:  # noqa: BLE001 - the caller reports a readable error
-        traceback.print_exc()
-        return False
+    peak = float(np.abs(frames).max())
+    scale = 0.9 / peak if peak > 0.99 else 1.0
+    pcm = np.clip(frames * scale, -1.0, 1.0)
+    pcm = (pcm * 32767.0).astype('<i2')
+    with wave.open(out_path, 'wb') as handle:
+        handle.setnchannels(channels)
+        handle.setsampwidth(2)
+        handle.setframerate(int(sample_rate))
+        handle.writeframes(pcm.tobytes())
+    print(f'wrote {out_path}: {channels} ch, {frames.shape[0]} frames', flush=True)
+    return out_path
+
+    # Explicit format: letting libsndfile infer it from the file name failed
+    # inside this process with "Format not recognised", so it is stated here.
+    
+def _use_soundfile_writes(pipeline):
+    """Replace the pipeline's torchaudio save with a soundfile save.
+
+    The pipeline writes its wav inside __call__ and returns the paths it wrote,
+    so the writing step itself has to be replaced - there is no flag for it.
+    The signature and the returned path are kept, so the rest of __call__
+    (including the input-params json written next to the audio) still works.
+    """
+    cls = type(pipeline)
+    if getattr(cls, '_writes_with_soundfile', False):
+        return pipeline
+
+    def save_wav_file(self, target_wav, idx, save_path=None, sample_rate=48000, format='wav'):
+        if save_path is None:
+            base = os.path.join(os.getcwd(), 'outputs')
+            os.makedirs(base, exist_ok=True)
+            path = os.path.join(base, f'output_{time.strftime("%Y%m%d%H%M%S")}_{idx}.wav')
+        elif os.path.isdir(save_path):
+            path = os.path.join(save_path, f'output_{time.strftime("%Y%m%d%H%M%S")}_{idx}.wav')
+        else:
+            parent = os.path.dirname(save_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            path = save_path
+        print(f'saving audio to {path} with soundfile', flush=True)
+        return _write_samples(target_wav, path, sample_rate)
+
+    cls.save_wav_file = save_wav_file
+    cls._writes_with_soundfile = True
+    print('ACE-Step will write wav files with soundfile (no torchcodec)', flush=True)
+    return pipeline
 
 
 def _run_job(token, prompt, lyrics, seconds, steps, seed):
@@ -188,10 +257,10 @@ def _run_job(token, prompt, lyrics, seconds, steps, seed):
     _set(token, status='loading', progress=0.02, tmp_dir=tmp_dir)
     try:
         _release_lyricist()
-        pipeline = _load_pipeline()
+        pipeline = _use_soundfile_writes(_load_pipeline())
         _set(token, status='generating', progress=0.1)
         with _gpu_lock:
-            pipeline(
+            outputs = pipeline(
                 audio_duration=seconds,
                 prompt=prompt,
                 lyrics=lyrics,
@@ -210,20 +279,33 @@ def _run_job(token, prompt, lyrics, seconds, steps, seed):
                 oss_steps=[],
                 guidance_scale_text=0.0,
                 guidance_scale_lyric=0.0,
-                # No save_path: letting the pipeline save needs torchcodec, which
-                # is what previously failed with "TorchCodec is required". The
-                # returned samples are written with soundfile instead.
-                save_path=None,
+                save_path=out_path,
             )
-        _write_audio(result, out_path)
+        print(f'pipeline returned {len(outputs or [])} item(s)', flush=True)
         if not os.path.exists(out_path):
-            # Some versions write next to the working directory instead.
+            # Newer/older checkouts name the file themselves; take whatever wav
+            # the pipeline reported or wrote.
+            for item in outputs or []:
+                if isinstance(item, str) and item.endswith('.wav') and os.path.exists(item):
+                    out_path = item
+                    break
+        if not os.path.exists(out_path):
             for name in os.listdir(tmp_dir):
                 if name.endswith('.wav'):
                     out_path = os.path.join(tmp_dir, name)
                     break
         if not os.path.exists(out_path):
             raise RuntimeError('The model finished without writing a wav file')
+        # Keep the last render next to the logs: the job's own copy is deleted as
+        # soon as the page has streamed it, and without a copy there is no way to
+        # check afterwards whether the voice is really in the audio.
+        try:
+            logs = os.path.join(HERE, 'logs')
+            os.makedirs(logs, exist_ok=True)
+            shutil.copyfile(out_path, os.path.join(logs, 'last_song.wav'))
+            print('kept a copy at logs/last_song.wav', flush=True)
+        except OSError as exc:
+            print(f'could not keep a copy of the render: {exc}', flush=True)
         _set(token, status='complete', progress=1.0, path=out_path,
              elapsed=round(time.time() - started, 1))
     except Exception as exc:  # noqa: BLE001 - reported to the page as text
@@ -255,14 +337,20 @@ def api_lyrics():
         from lyrics import Lyricist, lyrics_model_id, load_manifest
 
         lyricist = _lyricist()
-        lines = lyricist.write(genre, subject, seed, corpus=corpus, angle=angle, avoid=avoid)
+        # A whole song in sections: verses, a chorus that repeats, a bridge.
+        song = lyricist.write_song(genre, subject, seed, corpus=corpus, angle=angle, avoid=avoid)
+        sections = song.get('sections') or []
+        lines = song.get('lines') or []
     except Exception as exc:  # noqa: BLE001 - report the reason to the page
         traceback.print_exc()
         return jsonify({'error': f'lyric model failed: {exc}'}), 500
 
-    if len(lines) < 6:
-        return jsonify({'error': 'lyric model returned too little text', 'lines': lines}), 502
-    return jsonify({'lines': lines, 'model': lyrics_model_id(load_manifest())})
+    print('wrote %d sections / %d lines' % (len(sections), len(lines)), flush=True)
+    if len(lines) < 6 or len(sections) < 2:
+        return jsonify({'error': 'lyric model returned too little text',
+                        'lines': lines, 'sections': sections}), 502
+    return jsonify({'lines': lines, 'sections': sections,
+                    'model': lyrics_model_id(load_manifest())})
 
 
 @app.route('/health')
