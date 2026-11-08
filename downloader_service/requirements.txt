@@ -1,0 +1,9 @@
+# Dependencies for the hosted downloader only - no ML, no scraping, no
+# voice recognition. Keeping this list short is what makes the image fast to
+# build and small enough for a free hosting tier.
+Flask>=3.1.0
+Flask-Cors>=6.0.0
+gunicorn>=23.0.0
+yt-dlp>=2026.8.0
+# Ships a static ffmpeg binary, so the image needs no system packages.
+imageio-ffmpeg>=0.6.0

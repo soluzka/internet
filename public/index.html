@@ -626,7 +626,10 @@
     <!-- Toasts -->
     <div class="toast-container" id="toastContainer"></div>
 
-    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <script src="config.js"></script>
+    <!-- Vendored (Socket.IO 4.7.5) instead of a CDN link: the page then has no
+         third-party script to fetch at runtime, and works on any host. -->
+    <script src="vendor/socket.io.min.js"></script>
     <script>
         // Detect if Socket.IO is available (works locally, falls back on Vercel)
         let socket = null;
@@ -1171,6 +1174,14 @@
             if (event.key === 'Escape') closePlayer();
         });
 
+        // Where downloads are fetched from. Empty means this page's own origin
+        // (the local Python app); a static copy points it at the hosted
+        // downloader in config.js.
+        function apiUrl(path) {
+            const base = (window.DOWNLOAD_API || '').replace(/\/+$/, '');
+            return base + path;
+        }
+
         // --- Download ---
         function downloadVideo(url, title, cardId, btn, event) {
             event.stopPropagation();
@@ -1188,7 +1199,7 @@
             } else {
                 // The local app also exposes HTTP download endpoints, so try those
                 // before giving up. A static host answers with HTML/404 instead.
-                fetch('/api/download', {
+                fetch(apiUrl('/api/download'), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ url: url })
@@ -1209,6 +1220,12 @@
                     return data;
                 })
                 .then((data) => {
+                    // The hosted downloader queues the job and answers at once:
+                    // a long download would otherwise outlast the HTTP request.
+                    if (data.status === 'queued' && data.token) {
+                        pollDownload(url, data.token);
+                        return;
+                    }
                     if (progEl) progEl.classList.remove('active');
                     handleDownloadComplete({ url: url, token: data.token, title: title });
                 })
@@ -1219,7 +1236,9 @@
                         handleDownloadError({ url: url, error: err.message });
                         return;
                     }
-                    // Nothing can download here (static copy): open the source page.
+                    // No download backend answered. Either this copy has none
+                    // configured in config.js, or it could not be reached; in
+                    // both cases the source page is the only thing left.
                     const dl = window._activeDownloads && window._activeDownloads[url];
                     if (dl) {
                         removeToast(dl.toast);
@@ -1230,9 +1249,57 @@
                         delete window._activeDownloads[url];
                     }
                     window.open(url, '_blank', 'noopener');
-                    showToast('info', 'Opened the source page', 'This copy of the page cannot save files, so the video opened on its original site.', { autoClose: 6000 });
+                    showToast('info', 'Opened the source page', (window.DOWNLOAD_API ? 'The download service could not be reached, so the video opened on its original site.' : 'No downloader is set up for this copy yet, so the video opened on its original site.'), { autoClose: 6000 });
                 });
             }
+        }
+
+        // A queued download reports its own progress, so the card keeps showing
+        // a live percentage instead of a spinner until the whole file is ready.
+        function pollDownload(url, token) {
+            const startedAt = Date.now();
+            const TIMEOUT_MS = 20 * 60 * 1000;
+            let misses = 0;
+
+            const tick = () => {
+                fetch(apiUrl('/api/download/' + token))
+                    .then((response) => response.json())
+                    .then((job) => {
+                        misses = 0;
+                        if (job.status === 'complete') {
+                            handleDownloadComplete({ url: url, token: token, title: job.title });
+                            return;
+                        }
+                        if (job.status === 'error') {
+                            handleDownloadError({ url: url, error: job.error || 'Download failed' });
+                            return;
+                        }
+                        if (job.percent || job.status === 'processing') {
+                            handleDownloadProgress({
+                                url: url,
+                                percent: job.percent || 0,
+                                speed: job.speed,
+                                total: job.total,
+                                status: job.status === 'processing' ? 'finished' : undefined,
+                            });
+                        }
+                        if (Date.now() - startedAt > TIMEOUT_MS) {
+                            handleDownloadError({ url: url, error: 'The download took too long and was stopped.' });
+                            return;
+                        }
+                        setTimeout(tick, 1500);
+                    })
+                    .catch(() => {
+                        // A flaky connection should not throw the download away.
+                        misses += 1;
+                        if (misses > 5) {
+                            handleDownloadError({ url: url, error: 'Lost contact with the downloader.' });
+                            return;
+                        }
+                        setTimeout(tick, 2000);
+                    });
+            };
+            setTimeout(tick, 1000);
         }
 
         function handleDownloadProgress(data) {
@@ -1281,7 +1348,7 @@
             if (data.token) {
                 const iframe = document.createElement('iframe');
                 iframe.style.display = 'none';
-                iframe.src = '/download_file/' + data.token;
+                iframe.src = apiUrl('/download_file/' + data.token);
                 document.body.appendChild(iframe);
                 setTimeout(() => document.body.removeChild(iframe), 60000);
                 showToast('success', 'Download complete', data.title || 'Video saved', { autoClose: 5000 });

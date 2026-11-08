@@ -9,5 +9,12 @@
     "crawler"
   ],
   "author": "",
-  "license": "ISC"
+  "license": "ISC",
+  "dependencies": {
+    "socket.io-client": "4.7.5"
+  },
+  "scripts": {
+    "vendor": "cp node_modules/socket.io-client/dist/socket.io.min.js public/vendor/socket.io.min.js",
+    "deploy": "wrangler deploy"
+  }
 }

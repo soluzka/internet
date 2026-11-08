@@ -1,0 +1,23 @@
+# Deploy on Render: Dashboard -> New -> Blueprint -> point at this repo.
+# Render builds downloader_service/Dockerfile and gives the service a public
+# https URL. Free instances sleep after 15 minutes idle, so the first download
+# after a pause takes a few extra seconds while the container starts.
+services:
+  - type: web
+    name: video-downloader
+    runtime: docker
+    plan: free
+    dockerfilePath: ./downloader_service/Dockerfile
+    dockerContext: ./downloader_service
+    healthCheckPath: /health
+    envVars:
+      - key: MAX_HEIGHT
+        value: "720"
+      - key: MAX_ACTIVE_JOBS
+        value: "3"
+      - key: MAX_JOBS_PER_IP
+        value: "2"
+      # Optional: paste the path to a cookies file if the host you pick gets
+      # refused by YouTube's bot check. Leave unset otherwise.
+      - key: YT_COOKIES_FILE
+        value: ""
