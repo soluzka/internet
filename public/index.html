@@ -940,7 +940,10 @@
         try {
             // Reconnect a few times: a server restart used to leave the page
             // stranded in bundled-index mode for as long as the tab was open.
-            setConnection('connecting');
+            // On a hosted copy nothing is dialled until a search, so claiming to
+            // be "Connecting…" from the moment the page opens was a lie that
+            // never resolved. The bundled index is what it is actually using.
+            setConnection(ON_LOCAL_APP ? 'connecting' : 'snapshot');
             const options = {
                 timeout: 10000,
                 reconnection: true,

@@ -23,7 +23,11 @@
   // here, and it went stale every time the tunnel restarted, leaving the live
   // site calling an address that no longer existed.
   "vars": {
-    "DOWNLOAD_API": ""
+    "DOWNLOAD_API": "",
+    // Optional address of the music model when it is reachable from the
+    // internet. Empty means the Worker answers /api/song and /api/lyrics with a
+    // clear "this runs on the GPU machine" instead of a 405.
+    "SONG_API": ""
   },
   "ai": {
     "binding": "AI"

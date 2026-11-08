@@ -30,6 +30,18 @@ const TRANSCRIBE_ROUTE = /^\/api\/transcribe$/i;
 // Open this in a browser to see whether the download service is configured,
 // awake and holding a cookie jar, instead of guessing from a failed download.
 const HEALTH_ROUTE = /^\/api\/health$/i;
+
+// The music model cannot run here: it needs a GPU that a Worker does not have.
+// These paths exist so the page gets a straight answer instead of a 405 from
+// the static asset handler, and so an address can be supplied with SONG_API
+// when the model is reachable from the internet.
+const SONG_ROUTES = [
+  /^\/api\/lyrics$/i,
+  /^\/api\/song$/i,
+  /^\/api\/song\/[a-z0-9]+$/i,
+  /^\/song_file\/[a-z0-9]+$/i,
+  /^\/last_song$/i,
+];
 const WHISPER_MODEL = '@cf/openai/whisper-large-v3-turbo';
 const MAX_CLIP_BYTES = 8 * 1024 * 1024;
 
@@ -49,9 +61,42 @@ export default {
       return downloaderHealth(env);
     }
 
+    if (SONG_ROUTES.some((route) => route.test(url.pathname))) {
+      return song(request, env, url);
+    }
+
     return env.ASSETS.fetch(request);
   },
 };
+
+async function song(request, env, url) {
+  const base = String(env.SONG_API || '').trim().replace(/\/+$/, '');
+  if (!base) {
+    return json({
+      error: 'The music model runs on the computer that has the GPU. Start the desktop app '
+        + 'there so the page can use it, or set SONG_API to an address that reaches it.',
+      model: null,
+    }, 501);
+  }
+
+  const init = { method: request.method, headers: { accept: request.headers.get('accept') || '*/*' } };
+  const contentType = request.headers.get('content-type');
+  if (contentType) init.headers['content-type'] = contentType;
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    init.body = await request.arrayBuffer();
+  }
+
+  try {
+    const upstream = await fetch(base + url.pathname + url.search, init);
+    const headers = new Headers(upstream.headers);
+    headers.delete('access-control-allow-origin');
+    headers.delete('transfer-encoding');
+    headers.delete('connection');
+    return new Response(upstream.body, { status: upstream.status, headers });
+  } catch (err) {
+    return json({ error: 'The song service at that address did not answer.' }, 502);
+  }
+}
 
 function downloadBase(env) {
   return String(env.DOWNLOAD_API || '').trim().replace(/\/+$/, '');
