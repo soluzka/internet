@@ -118,6 +118,20 @@ def _is_supported_url(url: str) -> bool:
     return bool(re.match(r'^https?://[^\s/]+', url))
 
 
+# yt-dlp can imitate a real browser's TLS fingerprint when curl_cffi is
+# installed, which is the difference between YouTube serving the video and
+# answering "requires impersonation". The desktop app bundles it for the same
+# reason; here it is optional so the image still runs without it.
+try:
+    import curl_cffi  # noqa: F401
+    from yt_dlp.networking.impersonate import ImpersonateTarget
+    # yt-dlp asserts on a plain string here and the download dies with an empty
+    # AssertionError, so the target is parsed into the object it expects.
+    IMPERSONATE = ImpersonateTarget.from_str(os.environ.get('YT_IMPERSONATE', 'chrome'))
+except ImportError:
+    IMPERSONATE = None
+
+
 def _run_download(token: str, url: str) -> None:
     """Download one video, keeping the job entry up to date as it goes."""
     global _active_jobs
@@ -156,6 +170,8 @@ def _run_download(token: str, url: str) -> None:
     jar = _cookie_path()
     if jar:
         ydl_opts['cookiefile'] = jar
+    if IMPERSONATE:
+        ydl_opts['impersonate'] = IMPERSONATE
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -199,7 +215,9 @@ def _friendly_error(message: str, url: str) -> str:
     if 'unsupported url' in lowered:
         return 'This source does not support downloading. YouTube and Dailymotion work best.'
     if 'impersonat' in lowered:
-        return 'This source needs browser impersonation, which this service does not provide.'
+        return ('This source needs a browser-like connection and impersonation '
+                'failed. Install curl_cffi (it is in requirements.txt) or set '
+                'YT_IMPERSONATE to a target this machine supports.')
     if 'private video' in lowered or 'unavailable' in lowered:
         return 'This video is private or unavailable.'
     if 'ffmpeg' in lowered:

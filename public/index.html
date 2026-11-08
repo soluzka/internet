@@ -3385,6 +3385,27 @@
             return base + path;
         }
 
+        // Downloading needs a process somewhere, but it does not need the heavy
+        // one: downloader_service on 8080 is Flask and yt-dlp, about 60 MB and no
+        // GPU, where the AI app is gigabytes. The page asks whichever answered
+        // last, and on the first click it asks every candidate in turn.
+        const DOWNLOAD_SERVICE = 'http://127.0.0.1:8080';
+        let downloadOrigin = null;
+
+        function downloadCandidates() {
+            const list = [];
+            const configured = (window.DOWNLOAD_API || '').replace(/\/+$/, '');
+            if (configured) list.push(configured);
+            if (!list.includes(LOCAL_APP)) list.push(LOCAL_APP);
+            if (!list.includes(DOWNLOAD_SERVICE)) list.push(DOWNLOAD_SERVICE);
+            return list;
+        }
+
+        function downloadUrl(path) {
+            if (downloadOrigin) return downloadOrigin + path;
+            return apiUrl(path);
+        }
+
         // --- Download ---
         function downloadVideo(url, title, cardId, btn, event) {
             event.stopPropagation();
@@ -3402,12 +3423,12 @@
             } else {
                 // The local app also exposes HTTP download endpoints, so try those
                 // before giving up. A static host answers with HTML/404 instead.
-                fetch(apiUrl('/api/download'), {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url: url })
-                })
-                .then(async (response) => {
+                const askOne = async (origin) => {
+                    const response = await fetch(origin + '/api/download', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ url: url })
+                    });
                     const isJson = (response.headers.get('content-type') || '').includes('application/json');
                     if (!isJson) {
                         const err = new Error('No download API');
@@ -3421,7 +3442,24 @@
                         throw err;
                     }
                     return data;
-                })
+                };
+
+                (async () => {
+                    let lastError = null;
+                    for (const origin of downloadCandidates()) {
+                        try {
+                            const data = await askOne(origin);
+                            downloadOrigin = origin;
+                            return data;
+                        } catch (err) {
+                            lastError = err;
+                            // A service that answered and refused the video is the
+                            // end of it; only an unreachable one is worth skipping.
+                            if (err && err.code === 'API_ERROR') throw err;
+                        }
+                    }
+                    throw lastError || new Error('No download API');
+                })()
                 .then((data) => {
                     // The hosted downloader queues the job and answers at once:
                     // a long download would otherwise outlast the HTTP request.
@@ -3454,10 +3492,9 @@
                     // Nothing answered, so nothing was downloaded. Say that and
                     // offer the video page as a choice; opening it unasked looked
                     // like the site had wandered off on its own.
-                    const needsApp = !!window.DOWNLOAD_API;
-                    showToast('info', 'Not downloaded', needsApp
-                        ? 'The desktop app on this computer did not answer, so nothing was downloaded. Start the app and try again.'
-                        : 'No downloader is set up for this copy of the page.', {
+                    showToast('info', 'Not downloaded',
+                        'Nothing on this computer answered the download: neither the desktop app nor the ' +
+                        'downloader service. Start one of them and try again.', {
                         autoClose: 12000,
                         action: { href: url, label: 'Open the video page' }
                     });
@@ -3473,7 +3510,7 @@
             let misses = 0;
 
             const tick = () => {
-                fetch(apiUrl('/api/download/' + token))
+                fetch(downloadUrl('/api/download/' + token))
                     .then((response) => response.json())
                     .then((job) => {
                         misses = 0;
@@ -3559,7 +3596,7 @@
             if (data.token) {
                 const iframe = document.createElement('iframe');
                 iframe.style.display = 'none';
-                iframe.src = apiUrl('/download_file/' + data.token);
+                iframe.src = downloadUrl('/download_file/' + data.token);
                 document.body.appendChild(iframe);
                 setTimeout(() => document.body.removeChild(iframe), 60000);
                 showToast('success', 'Download complete', data.title || 'Video saved', { autoClose: 5000 });
