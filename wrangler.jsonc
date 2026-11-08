@@ -12,6 +12,14 @@
   "ai": {
     "binding": "AI"
   },
+  // Where the download backend lives. Static hosting cannot run yt-dlp, so the
+  // Worker forwards /api/download and /download_file/... to this URL. Leave it
+  // empty to keep downloads disabled on the deployed copy; the page then opens
+  // the source page instead. Can also be set in the dashboard (Settings ->
+  // Variables) without touching this file.
+  "vars": {
+    "DOWNLOAD_API": ""
+  },
   "observability": {
     "enabled": true
   }

@@ -1,11 +1,13 @@
 // Where the download backend lives.
 //
-// Leave this empty when the page is served by the Python app itself - downloads
-// then use the same origin and nothing changes.
+// Normally leave this empty. The Cloudflare Worker (worker.js) forwards
+// /api/download and /download_file/... to the downloader service named by its
+// DOWNLOAD_API variable, so the page stays same-origin and needs nothing here.
+// When the page runs from the Python app, downloads already use that app.
 //
-// When the page is exported as static files (Cloudflare, Netlify, a plain file
-// server) there is no Python behind it, so downloads have to go to a separate
-// hosted downloader. Put that service's URL here, without a trailing slash:
+// Set this only when the page is served somewhere without the Worker, for
+// example a plain file server or another static host. Use the service URL with
+// no trailing slash:
 //
 //   window.DOWNLOAD_API = 'https://video-downloader-xxxx.onrender.com';
 //
