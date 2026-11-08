@@ -38,11 +38,40 @@ python -m venv .venv
 Then open <http://127.0.0.1:5001>. `PORT` overrides the port, except `PORT=0`,
 which falls back to 5001 so the server cannot end up on a random port.
 
+### What `requirements.txt` installs
+
+One file, and none of it is the music model — that lives in `song_service/`
+with its own manifest. This is the web app:
+
+| Group | Packages | Why |
+| --- | --- | --- |
+| Web framework | `Flask`, `Flask-Cors`, `Flask-SocketIO`, `python-socketio`, `python-engineio` | The site, its socket stack and the live search stream |
+| HTTP clients | `aiohttp`, `requests` | Scraping the source sites |
+| Video downloads | `yt-dlp`, `yt-dlp-ejs`, `curl-cffi`, `imageio-ffmpeg` | yt-dlp plus the impersonation and ffmpeg it needs |
+| HTML parsing | `lxml` | Listings are parsed with lxml; there is no BeautifulSoup |
+| Ranking | `numpy`, `scipy`, `scikit-learn` | The ML index behind search order and genre inference |
+| Voice search | `faster-whisper` | Local transcription; the app falls back to the Windows recogniser without it |
+| Build | `wheel`, `setuptools`, `pyinstaller`, `pyinstaller-hooks-contrib` | Only needed to freeze the desktop executable |
+
+**Install into a virtual environment, always.** A partially installed or broken
+global interpreter makes PyInstaller freeze an empty package, which is what
+produces `cannot import name 'emit' from 'flask_socketio'` in the frozen app.
+Check the socket stack before building:
+
+```bash
+.venv\Scripts\python -c "from flask_socketio import emit, SocketIO"
+```
+
 Optional desktop build:
 
 ```bash
 .venv\Scripts\python -m PyInstaller --clean --noconfirm ai_engine.spec
 ```
+
+That freezes `app.py` into `dist/ai_engine.exe`, bundling `public/` and
+`cinema.ico` per `ai_engine.spec`. The executable runs the same Flask app and
+opens on the same port; it does **not** bundle the song models, which stay in
+`song_service/` and are reached over HTTP exactly as the browser does.
 
 ## How searching works
 
