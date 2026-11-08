@@ -576,7 +576,14 @@
         }
         .player-generate .gen-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
         .gen-audio { width: 100%; display: block; padding: 18px 16px; background: #05090a; }
-        .gen-lyrics { margin-top: 12px; font-size: 12px; line-height: 1.7; color: var(--text-dim); }
+        .gen-lyrics { margin-top: 6px; font-size: 12.5px; line-height: 1.75; color: var(--text); }
+        .gen-lyrics-title {
+            margin-top: 12px;
+            font-size: 10px;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--text-dim);
+        }
         .gen-lyrics h4 {
             margin: 10px 0 2px;
             font-size: 10px;
@@ -1831,23 +1838,32 @@
         async function aiLyrics(summary, seed) {
             const genre = (summary.genres && summary.genres[0] && summary.genres[0].name) || 'electronic music';
             const subject = (summary.words || []).slice(0, 10).join(', ') || 'the library';
-            let response;
-            try {
-                response = await fetch('/api/lyrics', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ genre, subject, seed }),
-                });
-            } catch (err) {
-                return null;
+            const bases = [''];
+            if (/^(127\.0\.0\.1|localhost)$/.test(location.hostname)) {
+                bases.push('http://127.0.0.1:8090');
             }
-            const isJson = (response.headers.get('content-type') || '').includes('application/json');
-            if (!response.ok || !isJson) return null;
-            const data = await response.json().catch(() => ({}));
-            const lines = Array.isArray(data.lines)
-                ? data.lines.map(item => String(item).trim()).filter(Boolean)
-                : [];
-            return lines.length >= 8 ? lines : null;
+            if (window.SONG_API) bases.push(String(window.SONG_API).replace(/\/+$/, ''));
+
+            for (const base of bases) {
+                let response;
+                try {
+                    response = await fetch(base + '/api/lyrics', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ genre, subject, seed }),
+                    });
+                } catch (err) {
+                    continue;
+                }
+                const isJson = (response.headers.get('content-type') || '').includes('application/json');
+                if (!response.ok || !isJson) continue;
+                const data = await response.json().catch(() => ({}));
+                const lines = Array.isArray(data.lines)
+                    ? data.lines.map(item => String(item).trim()).filter(Boolean)
+                    : [];
+                if (lines.length >= 8) return lines;
+            }
+            return null;
         }
 
         function applyAILyrics(lyrics, lines) {
@@ -1970,6 +1986,21 @@
             return bank;
         }
 
+        // A synthetic room: decaying noise in stereo, which is what a convolver
+        // needs to sound like a space rather than a slap.
+        function roomImpulse(ctx, seconds, decay) {
+            const length = Math.max(1, Math.floor(ctx.sampleRate * seconds));
+            const impulse = ctx.createBuffer(2, length, ctx.sampleRate);
+            for (let channel = 0; channel < 2; channel++) {
+                const data = impulse.getChannelData(channel);
+                for (let i = 0; i < length; i++) {
+                    const envelope = Math.pow(1 - i / length, decay);
+                    data[i] = (Math.random() * 2 - 1) * envelope;
+                }
+            }
+            return impulse;
+        }
+
         function midiOf(freq) {
             return 69 + 12 * Math.log2(freq / 440);
         }
@@ -2032,6 +2063,32 @@
             limiter.oversample = '2x';
             master.connect(highpass).connect(comp).connect(limiter).connect(offline.destination);
 
+            // Instrument bus with the effects a finished track has: a room, a
+            // delay locked to the tempo, and ducking under the kick.
+            const musicBus = offline.createGain();
+            musicBus.gain.value = 1;
+            musicBus.connect(master);
+
+            const reverb = offline.createConvolver();
+            reverb.buffer = roomImpulse(offline, 2.4, 2.6);
+            const reverbReturn = offline.createGain();
+            reverbReturn.gain.value = 0.2;
+            musicBus.connect(reverb).connect(reverbReturn).connect(master);
+
+            const delay = offline.createDelay(2);
+            delay.delayTime.value = (60 / bpm) * 0.75;
+            const feedback = offline.createGain();
+            feedback.gain.value = 0.28;
+            const delayTone = offline.createBiquadFilter();
+            delayTone.type = 'lowpass';
+            delayTone.frequency.value = 2300;
+            const delayReturn = offline.createGain();
+            delayReturn.gain.value = 0.15;
+            musicBus.connect(delay);
+            delay.connect(delayTone);
+            delayTone.connect(feedback).connect(delay);
+            delayTone.connect(delayReturn).connect(master);
+
             const noise = noiseBuffer(offline);
             // Recorded instruments, loaded once. If they fail (offline copy, no
             // samples folder) every part falls back to the oscillator voices.
@@ -2053,7 +2110,14 @@
                         const snare = section.half
                             ? (variant === 2 ? (step === 6 || step === 8) : step === 8)
                             : (variant === 1 ? (step === 4 || step === 11) : (step === 4 || step === 12));
-                        if (kick && section.energy > 0.4) voiceKick(offline, master, time);
+                        if (kick && section.energy > 0.4) {
+                            voiceKick(offline, master, time);
+                            // Sidechain: the instruments step back for the kick, which
+                            // is most of the difference between a loop and a track.
+                            musicBus.gain.setValueAtTime(1, time);
+                            musicBus.gain.linearRampToValueAtTime(0.68, time + 0.012);
+                            musicBus.gain.linearRampToValueAtTime(1, time + 0.19);
+                        }
                         if (snare && section.energy > 0.6) voiceSnare(offline, master, noise, time);
                         if (step % (section.half ? 4 : 2) === 0 && section.energy > 0.4) {
                             voiceHat(offline, master, noise, time, 0.05 + section.energy * 0.06);
@@ -2061,9 +2125,9 @@
                         if (step % 4 === 0 && section.energy > 0.5) {
                             const bassFreq = root * Math.pow(2, degree / 12);
                             const bassDur = stepSeconds * 3.4;
-                            const fingered = playSample(offline, master, bank.electric_bass_finger,
+                            const fingered = playSample(offline, musicBus, bank.electric_bass_finger,
                                 midiOf(bassFreq), time, bassDur, 0.34, { attack: 0.012, lowpass: 520 });
-                            if (!fingered) voiceBass(offline, master, time, bassFreq, bassDur);
+                            if (!fingered) voiceBass(offline, musicBus, time, bassFreq, bassDur);
                         }
                         // A lead motif only where the arrangement can carry it.
                         if (section.energy >= 0.8 && [0, 6, 10, 14].indexOf(step) !== -1) {
@@ -2071,9 +2135,9 @@
                             const shape = shapes[seed % shapes.length];
                             const motif = shape[Math.floor(step / 4) % shape.length];
                             const leadFreq = root * 4 * Math.pow(2, motif / 12);
-                            const plucked = playSample(offline, master, bank.acoustic_grand_piano,
+                            const plucked = playSample(offline, musicBus, bank.acoustic_grand_piano,
                                 midiOf(leadFreq), time, 0.46, 0.19, { attack: 0.004, lowpass: 5200 });
-                            if (!plucked) voiceLead(offline, master, time, leadFreq, 0.24);
+                            if (!plucked) voiceLead(offline, musicBus, time, leadFreq, 0.24);
                         }
                     }
                     // A piano playing the bar, so the harmony has a body that
@@ -2083,15 +2147,15 @@
                         : bank.acoustic_grand_piano;
                     [0, 3].forEach((offset, index) => {
                         const chordFreq = root * 2 * Math.pow(2, (degree + offset) / 12);
-                        playSample(offline, master, comp, midiOf(chordFreq),
+                        playSample(offline, musicBus, comp, midiOf(chordFreq),
                             barTime + index * barSeconds * 0.5, barSeconds * 0.62, 0.15,
                             { attack: 0.01, lowpass: 3600 });
                     });
                     if (bar % 2 === 0 && section.energy > 0.2) {
                         const chord = [0, 3, 7].map(d => root * 2 * Math.pow(2, d / 12));
-                        const bowed = chord.every(f => playSample(offline, master, bank.string_ensemble_1,
+                        const bowed = chord.every(f => playSample(offline, musicBus, bank.string_ensemble_1,
                             midiOf(f), barTime, barSeconds * 1.9, 0.085, { attack: 0.3, lowpass: 2600 }));
-                        if (!bowed) voicePad(offline, master, barTime, chord, barSeconds * 1.9);
+                        if (!bowed) voicePad(offline, musicBus, barTime, chord, barSeconds * 1.9);
                     }
                 }
                 barStart += section.bars;
@@ -2352,7 +2416,15 @@
                 };
                 actions.append(saveAudio, saveLyrics, again, replay);
 
-                panel.append(head, note, list, actions);
+                // The words come first and are labelled, because they are the part
+                // someone wants to read while the song plays.
+                const lyricHead = document.createElement('div');
+                lyricHead.className = 'gen-lyrics-title';
+                const writtenByModel = lyrics.some(part => part.ai);
+                lyricHead.textContent = (writtenByModel ? 'Lyrics, written by the model' : 'Lyrics, written for this song')
+                    + ` (${lyrics.reduce((count, part) => count + part.lines.length, 0)} lines)`;
+
+                panel.append(head, lyricHead, list, note, actions);
             } catch (err) {
                 panel.innerHTML = '';
                 const failure = document.createElement('div');

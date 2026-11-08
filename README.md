@@ -101,6 +101,58 @@ site are frozen at export time; scraped videos appear there only after running
 the exporter again and redeploying. Genres must be precomputed because the
 browser has no Python to ask.
 
+## Songs and lyrics on the deployed site
+
+The website makes songs itself — no local machine, no tunnel. The Worker owns
+both halves of it:
+
+| Route | What it does | Model |
+| --- | --- | --- |
+| `POST /api/lyrics` | writes the words for the track | `@cf/meta/llama-3.1-8b-instruct` |
+| `POST /api/song` | sings those words over music built from your search | `minimax/music-2.6` |
+| `GET /api/song-file` | streams the returned audio same-origin | — |
+
+The page calls `/api/lyrics` first, then `/api/song`, and only falls back to the
+browser synthesiser when neither answers (a plain static host, or a machine with
+no model service). On the deployed Worker both answer.
+
+### What the Cloudflare build needs
+
+1. **The AI binding.** `wrangler.jsonc` already declares it:
+
+   ```jsonc
+   "ai": { "binding": "AI" }
+   ```
+
+   It is a binding, not an npm package: there is nothing extra to install, and
+   `env.AI.run(model, input)` reaches Cloudflare's hosted models.
+2. **Workers AI turned on for the account**, with credit. Open the Cloudflare
+   dashboard → Workers AI and enable it. Billing is per use: roughly **$0.15 per
+   song** and **$0.01 per lyric set**.
+3. **The deploy itself**, which installs the build tool and ships the Worker:
+
+   ```bash
+   npx wrangler deploy
+   ```
+
+   Workers Builds does the same on push to `main`: it runs `bun install` (which
+   now also installs `wrangler` from `devDependencies`) and deploys. Nothing in
+   `song_service/` is uploaded — that directory is local-only.
+
+If the account has no Workers AI, `/api/lyrics` and `/api/song` answer `503`
+with a readable message and the page falls back to the synthesiser, so a deploy
+never breaks the site.
+
+### ACE-Step cannot be installed on Cloudflare
+
+Worth stating plainly, because it comes up: ACE-Step is Python, PyTorch and a
+3.5B checkpoint — Workers run JavaScript/WASM only, and need CUDA for that model.
+It cannot be packaged into the Worker. The two supported shapes are:
+
+- **on the website** — the hosted models above, which ship with the deploy;
+- **on this machine** — `song_service/` (ACE-Step, free per song), where the
+  page reaches it at `http://127.0.0.1:8090` because the page itself is local.
+
 ## Downloads on the deployed site
 
 Static hosting cannot run yt-dlp, so downloads need a real backend. That is

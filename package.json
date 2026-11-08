@@ -2,7 +2,7 @@
   "name": "video-link-scraper",
   "version": "1.0.0",
   "private": true,
-  "description": "AI-powered video search engine with ML ranking, voice assistant, and downloads",
+  "description": "AI-powered video search engine with ML ranking, voice assistant, song making and downloads",
   "keywords": [
     "web",
     "scraping",
@@ -13,8 +13,13 @@
   "dependencies": {
     "socket.io-client": "4.7.5"
   },
+  "devDependencies": {
+    "wrangler": "^4.42.0"
+  },
   "scripts": {
     "vendor": "cp node_modules/socket.io-client/dist/socket.io.min.js public/vendor/socket.io.min.js",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "preview": "wrangler dev",
+    "login": "wrangler login"
   }
 }

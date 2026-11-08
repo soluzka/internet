@@ -61,6 +61,21 @@ _jobs = {}
 _jobs_lock = threading.Lock()
 
 
+_lyricist_instance = None
+_lyricist_lock = threading.Lock()
+
+
+def _lyricist():
+    """One language model for the process, loaded on first use."""
+    global _lyricist_instance
+    with _lyricist_lock:
+        if _lyricist_instance is None:
+            from lyrics import Lyricist, lyrics_model_id, load_manifest
+
+            _lyricist_instance = Lyricist(lyrics_model_id(load_manifest()))
+        return _lyricist_instance
+
+
 def _load_pipeline():
     """Load the model once; the first call takes a minute or two."""
     global _pipeline
@@ -143,6 +158,30 @@ def _run_job(token, prompt, lyrics, seconds, steps, seed):
         traceback.print_exc()
         _set(token, status='error', error=str(exc)[:400],
              elapsed=round(time.time() - started, 1))
+
+
+@app.route('/api/lyrics', methods=['POST', 'OPTIONS'])
+def api_lyrics():
+    """Write lyrics for the page with the local language model."""
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    body = request.get_json(silent=True) or {}
+    genre = str(body.get('genre') or 'electronic music')[:120]
+    subject = str(body.get('subject') or '')[:400]
+    seed = int(body.get('seed') or 0)
+
+    try:
+        from lyrics import Lyricist, lyrics_model_id, load_manifest
+
+        lyricist = _lyricist()
+        lines = lyricist.write(genre, subject, seed)
+    except Exception as exc:  # noqa: BLE001 - report the reason to the page
+        traceback.print_exc()
+        return jsonify({'error': f'lyric model failed: {exc}'}), 500
+
+    if len(lines) < 6:
+        return jsonify({'error': 'lyric model returned too little text', 'lines': lines}), 502
+    return jsonify({'lines': lines, 'model': lyrics_model_id(load_manifest())})
 
 
 @app.route('/health')
@@ -249,6 +288,10 @@ def song_file(token):
 
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', '8090'))
+    # The page looks for this service on 8090, so an empty or zero PORT from the
+    # environment must not turn into a random port.
+    port = int(os.environ.get('SONG_PORT') or os.environ.get('PORT') or 8090)
+    if not port:
+        port = 8090
     # Loading happens on the first request so the service reports health quickly.
     app.run(host='127.0.0.1', port=port, threaded=True)
