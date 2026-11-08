@@ -1955,6 +1955,60 @@
             electric_piano_1: { C3: 48, A3: 57 },
             synth_drum: { A2: 45, A3: 57 },
             taiko_drum: { A2: 45, A3: 57 },
+            distortion_guitar: { A2: 45, E3: 52 },
+            overdriven_guitar: { A2: 45, E3: 52, A3: 57 },
+            electric_bass_pick: { A1: 33, A2: 45 },
+            lead_2_sawtooth: { A3: 57, C4: 60 },
+            pad_3_polysynth: { A3: 57, C4: 60 },
+            acoustic_guitar_steel: { A2: 45, E3: 52 },
+        };
+
+        // What each kind of music is made of. The searched genre picks the
+        // instruments and the groove, so a rock search does not come back as
+        // piano, and a techno search does not come back as rock.
+        const GENRE_PALETTES = {
+            'rock / metal': { comp: 'distortion_guitar', lead: 'overdriven_guitar', bass: 'electric_bass_pick', pad: null, pattern: 'rock' },
+            'hip hop / rap': { comp: 'electric_piano_1', lead: 'acoustic_grand_piano', bass: 'electric_bass_finger', pad: null, pattern: 'boombap' },
+            'reggae / dancehall': { comp: 'acoustic_guitar_steel', lead: 'acoustic_grand_piano', bass: 'electric_bass_finger', pad: null, pattern: 'skank' },
+            'techno': { comp: 'pad_3_polysynth', lead: 'lead_2_sawtooth', bass: 'electric_bass_finger', pad: 'string_ensemble_1', pattern: 'four' },
+            'house': { comp: 'electric_piano_1', lead: 'lead_2_sawtooth', bass: 'electric_bass_finger', pad: 'string_ensemble_1', pattern: 'four' },
+            'trance': { comp: 'pad_3_polysynth', lead: 'lead_2_sawtooth', bass: 'electric_bass_finger', pad: 'string_ensemble_1', pattern: 'four' },
+            'drum and bass': { comp: 'pad_3_polysynth', lead: 'lead_2_sawtooth', bass: 'electric_bass_pick', pad: null, pattern: 'breaks' },
+            'dubstep': { comp: 'pad_3_polysynth', lead: 'lead_2_sawtooth', bass: 'electric_bass_pick', pad: null, pattern: 'halftime' },
+            'dub': { comp: 'acoustic_guitar_steel', lead: 'electric_piano_1', bass: 'electric_bass_finger', pad: 'string_ensemble_1', pattern: 'skank' },
+            'trap': { comp: 'electric_piano_1', lead: 'lead_2_sawtooth', bass: 'electric_bass_finger', pad: null, pattern: 'halftime' },
+            'jazz': { comp: 'electric_piano_1', lead: 'acoustic_grand_piano', bass: 'electric_bass_finger', pad: null, pattern: 'boombap' },
+            'classical': { comp: 'acoustic_grand_piano', lead: 'string_ensemble_1', bass: 'string_ensemble_1', pad: 'string_ensemble_1', pattern: 'none' },
+            'pop': { comp: 'acoustic_grand_piano', lead: 'acoustic_grand_piano', bass: 'electric_bass_finger', pad: 'string_ensemble_1', pattern: 'rock' },
+            default: { comp: 'acoustic_grand_piano', lead: 'acoustic_grand_piano', bass: 'electric_bass_finger', pad: 'string_ensemble_1', pattern: 'rock' },
+        };
+
+        function paletteFor(name) {
+            const key = String(name || '').toLowerCase().trim();
+            if (GENRE_PALETTES[key]) return GENRE_PALETTES[key];
+            for (const genre in GENRE_PALETTES) {
+                if (genre !== 'default' && key && (key.indexOf(genre) !== -1 || genre.indexOf(key) !== -1)) {
+                    return GENRE_PALETTES[genre];
+                }
+            }
+            if (/rock|metal|punk|grunge|hardcore/.test(key)) return GENRE_PALETTES['rock / metal'];
+            if (/hip|rap|trap|drill/.test(key)) return GENRE_PALETTES['hip hop / rap'];
+            if (/reggae|dancehall|dub|ska/.test(key)) return GENRE_PALETTES['reggae / dancehall'];
+            if (/techno|house|trance|edm|electro|rave/.test(key)) return GENRE_PALETTES['techno'];
+            if (/jazz|soul|funk/.test(key)) return GENRE_PALETTES['jazz'];
+            if (/classical|orchestra|piano|ambient/.test(key)) return GENRE_PALETTES['classical'];
+            return GENRE_PALETTES.default;
+        }
+
+        // Kick, snare and hat positions per groove, in sixteenths.
+        const GROOVES = {
+            rock: { kick: [0, 6, 8, 14], snare: [4, 12], hat: 2 },
+            four: { kick: [0, 4, 8, 12], snare: [4, 12], hat: 2 },
+            boombap: { kick: [0, 6, 10], snare: [4, 12], hat: 2 },
+            skank: { kick: [0, 8], snare: [4, 12], hat: 4 },
+            halftime: { kick: [0, 10], snare: [8], hat: 4 },
+            breaks: { kick: [0, 3, 8, 10], snare: [4, 12], hat: 2 },
+            none: { kick: [], snare: [], hat: 0 },
         };
         const sampleCache = new Map();
 
@@ -2111,11 +2165,16 @@
             const noise = noiseBuffer(offline);
             // Recorded instruments, loaded once. If they fail (offline copy, no
             // samples folder) every part falls back to the oscillator voices.
-            const bank = await loadSamples(offline, ['acoustic_grand_piano', 'electric_bass_finger', 'string_ensemble_1', 'electric_piano_1']);
+            const bank = await loadSamples(offline, ['acoustic_grand_piano', 'electric_bass_finger', 'string_ensemble_1',
+                'electric_piano_1', 'distortion_guitar', 'overdriven_guitar', 'electric_bass_pick',
+                'lead_2_sawtooth', 'pad_3_polysynth', 'acoustic_guitar_steel']);
             let barStart = 0;
 
             sections.forEach(section => {
                 const style = REMIX_STYLES[section.style] || REMIX_NEUTRAL;
+                // The searched genre decides the band and the groove here.
+                const palette = paletteFor(section.style);
+                const groove = GROOVES[palette.pattern] || GROOVES.rock;
                 const root = rootFromKey(style.keys[0]);
                 for (let bar = 0; bar < section.bars; bar++) {
                     const barTime = (barStart + bar) * barSeconds;
@@ -2123,12 +2182,8 @@
                     const degree = [0, 0, 5, 3][bar % 4];
                     for (let step = 0; step < 16; step++) {
                         const time = barTime + step * stepSeconds;
-                        const kick = section.half
-                            ? (variant === 1 ? (step === 0 || step === 11) : variant === 2 ? (step === 0 || step === 7 || step === 10) : (step === 0 || step === 10))
-                            : (variant === 1 ? step === 0 || step === 3 || step === 8 || step === 11 : step % 4 === 0);
-                        const snare = section.half
-                            ? (variant === 2 ? (step === 6 || step === 8) : step === 8)
-                            : (variant === 1 ? (step === 4 || step === 11) : (step === 4 || step === 12));
+                        const kick = groove.kick.indexOf(step) !== -1;
+                        const snare = groove.snare.indexOf(step) !== -1;
                         if (kick && section.energy > 0.4) {
                             voiceKick(offline, master, time);
                             // Sidechain: the instruments step back for the kick, which
@@ -2138,14 +2193,16 @@
                             musicBus.gain.linearRampToValueAtTime(1, time + 0.19);
                         }
                         if (snare && section.energy > 0.6) voiceSnare(offline, master, noise, time);
-                        if (step % (section.half ? 4 : 2) === 0 && section.energy > 0.4) {
+                        if (groove.hat && step % groove.hat === 0 && section.energy > 0.4) {
                             voiceHat(offline, master, noise, time, 0.05 + section.energy * 0.06);
                         }
                         if (step % 4 === 0 && section.energy > 0.5) {
                             const bassFreq = root * Math.pow(2, degree / 12);
                             const bassDur = stepSeconds * 3.4;
-                            const fingered = playSample(offline, musicBus, bank.electric_bass_finger,
-                                midiOf(bassFreq), time, bassDur, 0.34, { attack: 0.012, lowpass: 520 });
+                            const bassVoice = bank[palette.bass] || bank.electric_bass_finger;
+                            const fingered = playSample(offline, musicBus, bassVoice,
+                                midiOf(bassFreq), time, bassDur, 0.34,
+                                { attack: palette.pattern === 'rock' ? 0.004 : 0.012, lowpass: 900 });
                             if (!fingered) voiceBass(offline, musicBus, time, bassFreq, bassDur);
                         }
                         // A lead motif only where the arrangement can carry it.
@@ -2154,25 +2211,26 @@
                             const shape = shapes[seed % shapes.length];
                             const motif = shape[Math.floor(step / 4) % shape.length];
                             const leadFreq = root * 4 * Math.pow(2, motif / 12);
-                            const plucked = playSample(offline, musicBus, bank.acoustic_grand_piano,
+                            const leadVoice = bank[palette.lead] || bank.acoustic_grand_piano;
+                            const plucked = playSample(offline, musicBus, leadVoice,
                                 midiOf(leadFreq), time, 0.46, 0.19, { attack: 0.004, lowpass: 5200 });
                             if (!plucked) voiceLead(offline, musicBus, time, leadFreq, 0.24);
                         }
                     }
-                    // A piano playing the bar, so the harmony has a body that
-                    // oscillators cannot give it.
-                    const comp = (section.energy < 0.75 && bank.electric_piano_1)
-                        ? bank.electric_piano_1
-                        : bank.acoustic_grand_piano;
-                    [0, 3].forEach((offset, index) => {
+                    // The comping instrument for this genre: power chords for rock,
+                    // electric piano for hip hop, a synth pad for techno.
+                    const comp = bank[palette.comp] || bank.acoustic_grand_piano;
+                    const compOffsets = palette.pattern === 'rock' ? [0, 5] : [0, 3];
+                    compOffsets.forEach((offset, index) => {
                         const chordFreq = root * 2 * Math.pow(2, (degree + offset) / 12);
                         playSample(offline, musicBus, comp, midiOf(chordFreq),
                             barTime + index * barSeconds * 0.5, barSeconds * 0.62, 0.15,
-                            { attack: 0.01, lowpass: 3600 });
+                            { attack: 0.01, lowpass: palette.pattern === 'rock' ? 3000 : 3600 });
                     });
-                    if (bar % 2 === 0 && section.energy > 0.2) {
+                    if (palette.pad && bar % 2 === 0 && section.energy > 0.2) {
+                        const padVoice = bank[palette.pad] || bank.string_ensemble_1;
                         const chord = [0, 3, 7].map(d => root * 2 * Math.pow(2, d / 12));
-                        const bowed = chord.every(f => playSample(offline, musicBus, bank.string_ensemble_1,
+                        const bowed = chord.every(f => playSample(offline, musicBus, padVoice,
                             midiOf(f), barTime, barSeconds * 1.9, 0.085, { attack: 0.3, lowpass: 2600 }));
                         if (!bowed) voicePad(offline, musicBus, barTime, chord, barSeconds * 1.9);
                     }

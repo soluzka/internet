@@ -81,10 +81,12 @@ def check(manifest):
     print('\n== weights ==')
     for model in manifest['models']:
         target = os.path.normpath(os.path.join(ROOT, model['target']))
-        present = os.path.isdir(target) and any(os.scandir(target))
-        print(f'  {"ok " if present else "MISSING "} {model["name"]}  ({model.get("size_gb", "?")} GB)  {target}')
-        if not present:
-            missing.append(model['name'])
+        expected = float(model.get('size_gb') or 0)
+        complete, actual_gb = weights_complete(target, expected)
+        state = 'ok ' if complete else ('MISSING ' if actual_gb == 0 else 'PARTIAL ')
+        print(f'  {state} {model["name"]}  {actual_gb:.1f} / {expected:.1f} GB  {target}')
+        if not complete:
+            missing.append(f'{model["name"]} ({actual_gb:.1f}/{expected:.1f} GB)')
 
     print('\n== versions ==')
     for label in ('torch', 'transformers', 'huggingface_hub'):
@@ -105,6 +107,42 @@ def check(manifest):
     return 0
 
 
+def folder_gb(target):
+    total = 0
+    if not os.path.isdir(target):
+        return 0.0
+    for root, _dirs, files in os.walk(target):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                pass
+    return total / (1024 ** 3)
+
+
+def weights_complete(target, expected_gb):
+    """A partial download is not an install, so size decides, not existence."""
+    actual = folder_gb(target)
+    if expected_gb <= 0:
+        return actual > 0, actual
+    return actual >= expected_gb * 0.9, actual
+
+
+def enable_parallel_transfer():
+    """Use hf_transfer's chunked parallel download; it is several times faster.
+
+    The variable must be set before huggingface_hub is imported, which is why
+    this runs first and the import happens after it.
+    """
+    try:
+        import hf_transfer  # noqa: F401
+    except ImportError:
+        run([sys.executable, '-m', 'pip', 'install', '--index-url',
+             'https://pypi.org/simple', 'hf_transfer'])
+    os.environ['HF_HUB_ENABLE_HF_TRANSFER'] = '1'
+    return True
+
+
 def download_weights(manifest):
     try:
         from huggingface_hub import snapshot_download
@@ -112,17 +150,25 @@ def download_weights(manifest):
         run([sys.executable, '-m', 'pip', 'install', 'huggingface_hub'])
         from huggingface_hub import snapshot_download
 
+    # Parallel chunks by default: the serial path measured 1.8 MB/s here, which
+    # turns a 10 GB install into an hour and a half.
+    if enable_parallel_transfer():
+        print('parallel transfer: on (hf_transfer, 8 concurrent files)')
+
     for model in manifest['models']:
         repo = model.get('repo')
         if not repo:
             continue
         target = os.path.normpath(os.path.join(ROOT, model['target']))
-        if os.path.isdir(target) and os.listdir(target):
-            print(f'\n== weights for {model["name"]}: already in {target} ==')
+        expected = float(model.get('size_gb') or 0)
+        complete, actual = weights_complete(target, expected)
+        if complete:
+            print(f'\n== weights for {model["name"]}: already in {target} ({actual:.1f} GB) ==')
             continue
         os.makedirs(target, exist_ok=True)
-        print(f'\n== weights for {model["name"]}: {repo} -> {target} ==')
-        snapshot_download(repo_id=repo, local_dir=target)
+        print(f'\n== weights for {model["name"]}: {repo} -> {target}')
+        print(f'   {actual:.1f} of ~{expected:.1f} GB present, resuming ==')
+        snapshot_download(repo_id=repo, local_dir=target, max_workers=8)
 
 
 def main():

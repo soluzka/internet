@@ -15,6 +15,7 @@
     { "spec": "git+https://github.com/ace-step/ACE-Step.git", "why": "The music model's code. The 7 GB checkpoint is downloaded separately below." },
     { "spec": "flask", "index": "https://pypi.org/simple", "why": "The HTTP service on 127.0.0.1:8090." },
     { "spec": "flask-cors", "index": "https://pypi.org/simple", "why": "The page is served from another port." },
+    { "spec": "hf_transfer", "index": "https://pypi.org/simple", "why": "Parallel chunked downloads for the weights: ~1.8 MB/s serial versus several times that in parallel." },
     { "spec": "soundfile", "index": "https://pypi.org/simple", "why": "Writing the rendered wav." },
     { "spec": "librosa", "index": "https://pypi.org/simple", "why": "ACE-Step's audio loading." }
   ],
@@ -26,6 +27,7 @@
     "ace_step": "acestep",
     "flask": "flask",
     "flask_cors": "flask_cors",
+    "hf_transfer": "hf_transfer",
     "soundfile": "soundfile",
     "librosa": "librosa"
   },
