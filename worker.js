@@ -36,6 +36,10 @@ export default {
       return transcribe(request, env);
     }
 
+    if (url.pathname === '/api/lyrics') {
+      return makeLyrics(request, env);
+    }
+
     if (url.pathname === '/api/song') {
       return makeSong(request, env);
     }
@@ -51,6 +55,59 @@ export default {
     return env.ASSETS.fetch(request);
   },
 };
+
+// Lyrics written for the track, by a model that runs on Cloudflare, so the
+// words are not a template filled with keywords.
+const LYRICS_MODEL = '@cf/meta/llama-3.1-8b-instruct';
+
+async function makeLyrics(request, env) {
+  if (request.method !== 'POST') {
+    return json({ error: 'Method not allowed' }, 405);
+  }
+  if (!env.AI) {
+    return json({ error: 'Workers AI is not bound to this Worker' }, 503);
+  }
+
+  const body = await request.json().catch(() => ({}));
+  const genre = String(body.genre || 'electronic music').slice(0, 80);
+  const subject = String(body.subject || '').slice(0, 400);
+  const seed = Number(body.seed) || 0;
+
+  const prompt = [
+    'You write lyrics for songs. Write 14 short singing lines about ' + genre + '.',
+    'The words and images should come from these ideas, without listing them: ' + (subject || genre) + '.',
+    'Rules: present tense, concrete images, no cliches about music or the internet,',
+    'no rhymes forced into place, lines under twelve words, at least one line that repeats.',
+    'Return only the lines, one per line, no headings, no numbering, no quotes.',
+  ].join(' ');
+
+  let result;
+  try {
+    result = await env.AI.run(LYRICS_MODEL, {
+      messages: [
+        { role: 'system', content: 'You are a lyricist. You answer with lines of lyrics and nothing else.' },
+        { role: 'user', content: prompt },
+      ],
+      max_tokens: 500,
+      temperature: 0.95,
+      seed,
+    });
+  } catch (err) {
+    return json({ error: 'The lyric model failed: ' + (err.message || 'unknown') }, 502);
+  }
+
+  const text = String((result && result.response) || '');
+  const lines = text
+    .split(/\r?\n+/)
+    .map((line) => line.replace(/^[\s\-*\d.\u2022)"']+/, '').replace(/["']+$/, '').trim())
+    .filter((line) => line.length > 1 && line.length < 160)
+    .slice(0, 20);
+
+  if (lines.length < 4) {
+    return json({ error: 'The lyric model returned too little text' }, 502);
+  }
+  return json({ lines, model: LYRICS_MODEL });
+}
 
 async function makeSong(request, env) {
   if (request.method !== 'POST') {

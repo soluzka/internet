@@ -1825,6 +1825,43 @@
             ];
         }
 
+        // Words written for this song by a language model, not assembled from a
+        // template. The Worker route does the asking; without it the song keeps
+        // the built-in verses, so a plain static copy still has lyrics.
+        async function aiLyrics(summary, seed) {
+            const genre = (summary.genres && summary.genres[0] && summary.genres[0].name) || 'electronic music';
+            const subject = (summary.words || []).slice(0, 10).join(', ') || 'the library';
+            let response;
+            try {
+                response = await fetch('/api/lyrics', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ genre, subject, seed }),
+                });
+            } catch (err) {
+                return null;
+            }
+            const isJson = (response.headers.get('content-type') || '').includes('application/json');
+            if (!response.ok || !isJson) return null;
+            const data = await response.json().catch(() => ({}));
+            const lines = Array.isArray(data.lines)
+                ? data.lines.map(item => String(item).trim()).filter(Boolean)
+                : [];
+            return lines.length >= 8 ? lines : null;
+        }
+
+        function applyAILyrics(lyrics, lines) {
+            // Keep the sections the arrangement already has, and pour the written
+            // lines into them.
+            let index = 0;
+            return lyrics.map(part => {
+                const taken = lines.slice(index, index + part.lines.length);
+                index += part.lines.length;
+                if (taken.length < part.lines.length) return part;
+                return { section: part.section, lines: taken, ai: true };
+            });
+        }
+
         function rootFromKey(key) {
             const name = String(key || 'A minor').toLowerCase().split(/\s+/)[0];
             const semitone = KEY_TABLE[name] !== undefined ? KEY_TABLE[name] : 9;
@@ -1891,6 +1928,80 @@
             osc.stop(time + dur + 0.05);
         }
 
+        // Real recorded instruments, shipped as files in samples/ (FluidR3_GM,
+        // MIT). Each list is a few recorded notes; anything else is that note
+        // pitch-shifted, which is how a sampler has always worked.
+        const SAMPLE_NOTES = {
+            acoustic_grand_piano: { A1: 33, C2: 36, E2: 40, A2: 45, C3: 48, E3: 52, A3: 57, C4: 60, E4: 64, A4: 69 },
+            electric_bass_finger: { A0: 21, A1: 33, A2: 45, A3: 57 },
+            string_ensemble_1: { A2: 45, C3: 48, A3: 57, C4: 60 },
+            choir_aahs: { A3: 57, C4: 60 },
+            electric_piano_1: { C3: 48, A3: 57 },
+            synth_drum: { A2: 45, A3: 57 },
+            taiko_drum: { A2: 45, A3: 57 },
+        };
+        const sampleCache = new Map();
+
+        async function loadSamples(ctx, names) {
+            const bank = {};
+            await Promise.all(names.map(async name => {
+                const notes = SAMPLE_NOTES[name];
+                if (!notes) return;
+                const key = name + '@' + ctx.sampleRate;
+                if (sampleCache.has(key)) {
+                    bank[name] = sampleCache.get(key);
+                    return;
+                }
+                const loaded = await Promise.all(Object.keys(notes).map(async note => {
+                    try {
+                        const response = await fetch('samples/' + name + '-' + note + '.mp3');
+                        if (!response.ok) return null;
+                        const buffer = await ctx.decodeAudioData(await response.arrayBuffer());
+                        return { midi: notes[note], buffer };
+                    } catch (err) {
+                        return null;
+                    }
+                }));
+                const usable = loaded.filter(Boolean);
+                if (!usable.length) return;
+                sampleCache.set(key, usable);
+                bank[name] = usable;
+            }));
+            return bank;
+        }
+
+        function midiOf(freq) {
+            return 69 + 12 * Math.log2(freq / 440);
+        }
+
+        function playSample(ctx, dest, list, midi, time, dur, level, options) {
+            if (!list || !list.length) return false;
+            let pick = list[0];
+            list.forEach(entry => {
+                if (Math.abs(entry.midi - midi) < Math.abs(pick.midi - midi)) pick = entry;
+            });
+            const src = ctx.createBufferSource();
+            src.buffer = pick.buffer;
+            src.playbackRate.value = Math.pow(2, (midi - pick.midi) / 12);
+            const gain = ctx.createGain();
+            const opts = options || {};
+            const attack = opts.attack === undefined ? 0.006 : opts.attack;
+            gain.gain.setValueAtTime(0.0001, time);
+            gain.gain.exponentialRampToValueAtTime(level, time + attack);
+            gain.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+            let tail = src.connect(gain);
+            if (opts.lowpass) {
+                const filter = ctx.createBiquadFilter();
+                filter.type = 'lowpass';
+                filter.frequency.value = opts.lowpass;
+                tail = tail.connect(filter);
+            }
+            tail.connect(dest);
+            src.start(time);
+            src.stop(time + dur + 0.05);
+            return true;
+        }
+
         async function renderLibrarySong(summary, seed) {
             const sampleRate = 44100;
             const bpm = libraryTempo(summary, seed);
@@ -1922,6 +2033,9 @@
             master.connect(highpass).connect(comp).connect(limiter).connect(offline.destination);
 
             const noise = noiseBuffer(offline);
+            // Recorded instruments, loaded once. If they fail (offline copy, no
+            // samples folder) every part falls back to the oscillator voices.
+            const bank = await loadSamples(offline, ['acoustic_grand_piano', 'electric_bass_finger', 'string_ensemble_1', 'electric_piano_1']);
             let barStart = 0;
 
             sections.forEach(section => {
@@ -1945,19 +2059,39 @@
                             voiceHat(offline, master, noise, time, 0.05 + section.energy * 0.06);
                         }
                         if (step % 4 === 0 && section.energy > 0.5) {
-                            voiceBass(offline, master, time, root * Math.pow(2, degree / 12), stepSeconds * 3.4);
+                            const bassFreq = root * Math.pow(2, degree / 12);
+                            const bassDur = stepSeconds * 3.4;
+                            const fingered = playSample(offline, master, bank.electric_bass_finger,
+                                midiOf(bassFreq), time, bassDur, 0.34, { attack: 0.012, lowpass: 520 });
+                            if (!fingered) voiceBass(offline, master, time, bassFreq, bassDur);
                         }
                         // A lead motif only where the arrangement can carry it.
                         if (section.energy >= 0.8 && [0, 6, 10, 14].indexOf(step) !== -1) {
                             const shapes = [[0, 3, 7, 5], [0, 5, 3, 10], [0, 7, 10, 3]];
                             const shape = shapes[seed % shapes.length];
                             const motif = shape[Math.floor(step / 4) % shape.length];
-                            voiceLead(offline, master, time, root * 4 * Math.pow(2, motif / 12), 0.24);
+                            const leadFreq = root * 4 * Math.pow(2, motif / 12);
+                            const plucked = playSample(offline, master, bank.acoustic_grand_piano,
+                                midiOf(leadFreq), time, 0.46, 0.19, { attack: 0.004, lowpass: 5200 });
+                            if (!plucked) voiceLead(offline, master, time, leadFreq, 0.24);
                         }
                     }
+                    // A piano playing the bar, so the harmony has a body that
+                    // oscillators cannot give it.
+                    const comp = (section.energy < 0.75 && bank.electric_piano_1)
+                        ? bank.electric_piano_1
+                        : bank.acoustic_grand_piano;
+                    [0, 3].forEach((offset, index) => {
+                        const chordFreq = root * 2 * Math.pow(2, (degree + offset) / 12);
+                        playSample(offline, master, comp, midiOf(chordFreq),
+                            barTime + index * barSeconds * 0.5, barSeconds * 0.62, 0.15,
+                            { attack: 0.01, lowpass: 3600 });
+                    });
                     if (bar % 2 === 0 && section.energy > 0.2) {
-                        voicePad(offline, master, barTime,
-                            [0, 3, 7].map(d => root * 2 * Math.pow(2, d / 12)), barSeconds * 1.9);
+                        const chord = [0, 3, 7].map(d => root * 2 * Math.pow(2, d / 12));
+                        const bowed = chord.every(f => playSample(offline, master, bank.string_ensemble_1,
+                            midiOf(f), barTime, barSeconds * 1.9, 0.085, { attack: 0.3, lowpass: 2600 }));
+                        if (!bowed) voicePad(offline, master, barTime, chord, barSeconds * 1.9);
                     }
                 }
                 barStart += section.bars;
@@ -2119,7 +2253,11 @@
                     : Math.floor(Math.random() * 1000000);
                 window._nextSongSeed = undefined;
                 const summary = songSource();
-                const lyrics = libraryLyrics(summary, seed);
+                let lyrics = libraryLyrics(summary, seed);
+                try {
+                    const written = await aiLyrics(summary, seed);
+                    if (written) lyrics = applyAILyrics(lyrics, written);
+                } catch (err) {}
                 // A model song takes tens of seconds, so the player says what it is
                 // waiting for instead of looking stuck on the old picture.
                 stage.innerHTML = '<div class="gen-canvas" style="display:flex;align-items:center;justify-content:center;text-align:center;color:#8b9aa0;font-size:13px;padding:20px"><div id="songStatus">Asking the song model...</div></div>';
