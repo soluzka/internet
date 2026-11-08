@@ -903,6 +903,32 @@
         // of retrying against an origin that can never answer.
         const LOCAL_APP = 'http://127.0.0.1:5001';
         const ON_LOCAL_APP = /^(127\.0\.0\.1|localhost|\[::1\])$/.test(location.hostname);
+        let socketChecked = true;
+
+        // Connect to the app on this machine the first time something needs it.
+        // Loading the page must stay silent: an app that is not running would
+        // otherwise log a refused connection on every visit. The check happens
+        // once per page, on the first search.
+        async function ensureSocket() {
+            if (socketChecked) return !!(socket && socket.connected);
+            socketChecked = true;
+            try {
+                const probe = await fetchBounded(LOCAL_APP + '/api/stats', {}, 2500);
+                if (!probe || !probe.ok) throw new Error('the desktop app is not running');
+                socket.connect();
+                await new Promise((resolve) => {
+                    const finish = () => resolve();
+                    socket.once('connect', finish);
+                    socket.once('connect_error', finish);
+                    setTimeout(finish, 4000);
+                });
+            } catch (err) {
+                console.log('The desktop app is not running here, searching the bundled index');
+                useHttpFallback = true;
+                setConnection('snapshot');
+            }
+            return !!(socket && socket.connected);
+        }
         try {
             // Reconnect a few times: a server restart used to leave the page
             // stranded in bundled-index mode for as long as the tab was open.
@@ -916,31 +942,10 @@
                 autoConnect: ON_LOCAL_APP,
             };
             socket = ON_LOCAL_APP ? io(options) : io(LOCAL_APP, options);
-            // Anywhere other than the app's own origin, nothing is listening
-            // unless the desktop app happens to be running on this machine. One
-            // cheap request finds out; without it every visitor watches five
-            // "connection refused" retries in the console before the page falls
-            // back to the bundled index.
-            if (!ON_LOCAL_APP) {
-                fetchBounded(LOCAL_APP + '/api/stats', {}, 2500)
-                    .then((probe) => {
-                        if (probe && probe.ok) {
-                            socket.connect();
-                            return;
-                        }
-                        throw new Error('the desktop app is not running');
-                    })
-                    .catch(() => {
-                        console.log('The desktop app is not running here, using bundled index');
-                        useHttpFallback = true;
-                        setConnection('snapshot');
-                        try { if (socket) socket.disconnect(); } catch (err) {}
-                        socket = null;
-                        loadIndex()
-                            .then(() => updateStats(indexStats))
-                            .catch(() => setConnection('offline'));
-                    });
-            }
+            // Nothing is dialled while the page loads; ensureSocket() does that on
+            // the first search, so a visitor whose app is closed sees no failed
+            // request at all until they actually search.
+            if (!ON_LOCAL_APP) socketChecked = false;
             // First failure switches to the bundled index for good, so a static
             // host does not get hammered with /socket.io requests.
             // A restart makes the first attempts fail; only give up on the
@@ -1105,7 +1110,7 @@
         // --- Search ---
         let searchTimeout = null;
         let activeSearchToken = 0;
-        function doSearch() {
+        async function doSearch() {
             const query = searchInput.value.trim();
             if (!query) return;
             resultsContainer.innerHTML = '';
@@ -1113,6 +1118,9 @@
 
             // Clear any previous timeout
             if (searchTimeout) clearTimeout(searchTimeout);
+
+            // The live server is asked for on the first search, not on load.
+            if (!ON_LOCAL_APP && socket) await ensureSocket();
 
             if (socket && !useHttpFallback && socket.connected) {
                 // Socket.IO mode (local) - streaming results
