@@ -50,6 +50,17 @@ CORS(app, resources={r"/*": {
     "max_age": 86400,
 }})
 
+@app.after_request
+def _allow_private_network(response):
+    # The deployed page is served over https and calls this service on
+    # http://127.0.0.1:8090, so the browser asks before a public page may reach a
+    # loopback address. Answering the preflight keeps that request from being
+    # blocked, which is what makes the model work without a tunnel.
+    if request.headers.get('Access-Control-Request-Private-Network'):
+        response.headers['Access-Control-Allow-Private-Network'] = 'true'
+    return response
+
+
 # 8 GB of VRAM cannot hold the whole 3.5B model alongside the decoder, so the
 # weights are paged in and out instead of failing with an out-of-memory error.
 CPU_OFFLOAD = os.environ.get('ACE_CPU_OFFLOAD', '1') != '0'

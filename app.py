@@ -66,6 +66,17 @@ CORS(app, resources={
     }
 })
 
+@app.after_request
+def _allow_private_network(response):
+    # The deployed page is served over https from Cloudflare and downloads from
+    # this app on http://127.0.0.1:5001. Chrome asks permission before a public
+    # page may reach a loopback address, and only stays quiet when the preflight
+    # carries this answer.
+    if request.headers.get('Access-Control-Request-Private-Network'):
+        response.headers['Access-Control-Allow-Private-Network'] = 'true'
+    return response
+
+
 # Initialize SocketIO - use eventlet on Render, threading locally
 async_mode = 'eventlet' if os.environ.get('RENDER') else 'threading'
 try:

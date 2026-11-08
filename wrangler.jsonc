@@ -16,13 +16,13 @@
   // empty to keep downloads disabled on the deployed copy; the page then opens
   // the source page instead. Can also be set in the dashboard (Settings ->
   // Variables) without touching this file.
+  // Neither service needs a variable any more: the deployed page asks this
+  // machine directly (127.0.0.1:5001 for downloads, 127.0.0.1:8090 for the song
+  // model), which is what config.js now points at. A tunnel address used to sit
+  // here, and it went stale every time the tunnel restarted, leaving the live
+  // site calling an address that no longer existed.
   "vars": {
-    "DOWNLOAD_API": "",
-    // Where the song model lives, so the deployed page has something to try
-    // before the visitor pastes an address into "Connect my model". A Quick
-    // Tunnel gets a new address every time it restarts, so this value goes
-    // stale: update it, or leave it empty and paste in the page instead.
-    "SONG_API": "https://arrow-bell-meters-opponents.trycloudflare.com"
+    "DOWNLOAD_API": ""
   },
   "observability": {
     "enabled": true

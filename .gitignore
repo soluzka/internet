@@ -37,6 +37,8 @@ song_service/logs/
 
 # The tunnel binary is a 55 MB download, not source
 tools/bin/*.exe
+# Portable Node, used only to run wrangler from this machine
+tools/node/
 
 # Environment secrets
 .env

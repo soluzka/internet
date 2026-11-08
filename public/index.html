@@ -3647,7 +3647,11 @@
 
             voiceTranscript.textContent = 'Transcribing...';
             try {
-                const response = await fetch('api/transcribe', {
+                // The deployed page has no transcription route of its own: the
+                // Worker serves static files. The desktop app on this machine runs
+                // whisper for /api/transcribe, so ask it directly, the same way
+                // downloads and the song model are reached.
+                const response = await fetch(apiUrl('/api/transcribe'), {
                     method: 'POST',
                     headers: { 'Content-Type': type },
                     body: blob
