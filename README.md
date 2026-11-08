@@ -33,12 +33,15 @@ It runs two ways from one codebase:
 
 ### The `build/` folder
 
-It is where PyInstaller's work folder, the portable Node with wrangler installed,
-captured logs, test audio and one-off probe scripts pile up — around 520 MB that
-is not source, so `.gitignore` excludes `build/*` rather than the folder.
+The scripts in here are tracked, so the checks move with the repository. What a
+build *generates* stays local, because no commit can hold it: `ai_engine/` is
+PyInstaller's work folder with a 314 MB package in it, and `wrangler-tool/` is
+the portable Node install with a 103 MB `workerd.exe`, and GitHub refuses any
+file over 100 MB. Captured logs, test audio, JSON payloads and the
+`commit_msg*.txt` notes are left out for the same reason a receipt is not kept
+with the product.
 
-Six scripts are the exceptions, because they are how a change is checked after it
-is made rather than something used once:
+The ones worth knowing about:
 
 | Script | What it checks |
 | --- | --- |
