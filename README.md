@@ -21,9 +21,12 @@ It runs two ways from one codebase:
 | `genre_model.py` | Infers a genre per video by questioning the listing |
 | `public/` | The UI (`index.html`, styles, `config.js`, `data/videos.json`) |
 | `tools/export_index.py` | Refreshes the committed index and precomputes genres |
-| `worker.js` + `wrangler.jsonc` | Cloudflare Worker: static assets, voice, download proxy |
+| `worker.js` + `wrangler.jsonc` | Cloudflare Worker: static assets, Workers AI voice, download and song proxies |
 | `downloader_service/` | Small Flask container that runs yt-dlp for the static site |
 | `song_service/` | The local lyric and music models (GPU, 8090) |
+| `tools/start_services.ps1` | Starts the downloader and the song service, and keeps `songsvc://` registered |
+| `tools/install_autostart.ps1` | Puts that launcher in your Startup folder, so both return at logon |
+| `tools/register_protocol.ps1` | Registers `songsvc://` so the site's Start the AI button can launch it |
 | `start.cmd` / `start.ps1` | One click: song service, site and tunnel |
 | `data/video_index.db` | Committed snapshot of the index |
 
@@ -134,9 +137,10 @@ browser has no Python to ask.
 
 ## Songs and lyrics
 
-The AI in this project is **local only**. There is no Workers AI binding, no
-hosted model call and nothing billed per track: `worker.js` serves the static
-page and proxies downloads, and that is all it does.
+The song AI is **local only**: ACE-Step is a 3.5B checkpoint that needs CUDA, and
+Workers AI has no music model in its catalog, so nothing on Cloudflare can render
+a track. Workers AI does handle **voice search** (`@cf/openai/whisper`), which is
+the one model that genuinely runs in the site.
 
 The page asks two things of `song_service/`, which runs on your own machine:
 
@@ -145,10 +149,23 @@ The page asks two things of `song_service/`, which runs on your own machine:
 | `POST /api/lyrics` | writes the words | Qwen 2.5 1.5B Instruct |
 | `POST /api/song` | sings those words | ACE-Step v1 3.5B |
 
-The page calls the service on `127.0.0.1:8090` when it is opened from this
-machine, and falls back to the sampled band in the browser when the service is
-not running. On the deployed site the page reaches the same service through a
-Quick Tunnel — see below — or plays the band if nothing answers.
+Both models pick their device themselves: the lyric model runs on CUDA when
+torch can see a card and in system RAM when it cannot. On the GPU the lyric model
+is loaded only after the song model has been released, because 7.9 GB of ACE-Step
+and 3 GB of Qwen do not fit in 8 GB together and paging between them cost more
+than reloading — measured here, a lyric request went from **3m42s to 10.5s**.
+
+`GET /health` reports what is running where:
+
+```json
+{"ok": true, "device": "cuda", "gpu": "NVIDIA GeForce RTX 4060 Ti",
+ "vram_gb": 8.0, "loaded": true, "lyrics_loaded": true, "cpu_offload": true}
+```
+
+The page calls the service on `127.0.0.1:8090` and falls back to the sampled band
+in the browser when the service is not running. It also stops asking the Worker
+for the song model after the first 501, so a compose goes straight to the machine
+that can actually render.
 
 ### Installing the AI packages
 
@@ -208,10 +225,50 @@ time the tunnel restarts.
 > an empty config that keeps the tunnel bound to port 8090. `cloudflared.exe`
 > itself is downloaded into `tools/bin/` and gitignored (55 MB).
 
-### Pointing the live site at the model
+### Starting the AI from the site
 
-The model address is a runtime setting, not a build setting, because the tunnel
-address changes on every restart:
+The deployed page is on Cloudflare, the song AI is on your PC, and a browser tab
+cannot start a program. Windows can, so the header carries a **Start the AI**
+button that navigates to `songsvc://start`; that scheme is registered for the
+current user (HKCU, no administrator) and points at `tools/start_services.ps1`.
+
+What the click does, in order: Windows runs the launcher, the launcher starts the
+downloader and the song service with `SONG_WARM=1` so the model is on the card
+before the first song, and the page polls `/health` every three seconds until the
+button reads **AI ready**.
+
+Next to it a badge reports what the render will use, read from `/health` rather
+than guessed: `CUDA · GeForce RTX 4060 Ti` in green, `CPU only` in amber when
+torch sees no card, and `AI off` when the service is not running.
+
+![The header: Start the AI beside Song designer, and the CUDA badge reading the card from /health](public/gpu-chip.png)
+
+Three things start it, and none of them need you to run a script:
+
+| Trigger | How |
+| --- | --- |
+| Clicking **Start the AI** | `songsvc://` → `tools/start_services.ps1` |
+| Logging in to Windows | Startup entry written by `tools/install_autostart.ps1` |
+| Running it by hand | `tools/start_services.ps1` (safe to repeat) |
+
+The launcher repairs the `songsvc://` registration on every run — missing, or
+pointing at a folder that has moved — so the button keeps working without
+re-registering. It writes one line per run to `build\launcher_trace.txt`, which
+is how "the site started it" can be checked rather than assumed.
+
+Two things it cannot do: start anything on a machine where the scheme is not
+registered (your phone, another computer), and render a song without the PC —
+no Cloudflare model composes music, as the section further down explains.
+
+The badge is the quickest way to answer "is it actually on the GPU?" — it says
+so in the header, from the service's own answer, without opening a console.
+
+### If the site must reach this machine over the internet
+
+Everything above works because the page runs on the same computer as the model.
+A phone or another laptop needs a public address to reach instead, which the
+optional tunnel in `start.ps1` provides. The model address is a runtime setting,
+not a build setting, because a Quick Tunnel address changes on every restart:
 
 1. run `start.cmd` and copy the `https://….trycloudflare.com` address it prints;
 2. on the live site press **Song designer**, then **Connect my model**, and paste
@@ -249,8 +306,8 @@ GPU, since `/api/song` has no authentication.
 
 ### What the deploy needs
 
-Nothing AI-related. `wrangler.jsonc` declares no `ai` binding and the Worker
-makes no model calls:
+One Workers AI binding and no secrets. `wrangler.jsonc` declares
+`"ai": {"binding": "AI"}`, which voice search uses on the free allowance:
 
 ```bash
 npx wrangler deploy
@@ -348,7 +405,12 @@ rather than turned into a query.
 | `MAX_ACTIVE_JOBS` / `MAX_JOBS_PER_IP` | downloader | Concurrency limits |
 | `YT_COOKIES_FILE` | downloader | Optional yt-dlp cookies file |
 | `YT_COOKIES` | downloader | The same cookie jar as text, for hosts that only give you environment variables |
-| `/api/health` | Worker | Reports whether the download service is configured, awake and holding a cookie jar |
+| `SONG_WARM` | song service | `1` loads the song model at startup instead of on the first song (set by the launcher) |
+| `LYRICS_DEVICE` | song service | `cuda` or `cpu` for the lyric model; unset means cuda when torch sees a card |
+| `ACE_CPU_OFFLOAD` / `ACE_DTYPE` | song service | Page the weights in and out (default `1`), and the model dtype (default `bfloat16`) |
+| `ACE_STEPS` / `ACE_MAX_SECONDS` | song service | Diffusion steps (30) and the ceiling on song length (120 s) |
+| `/api/health` (Worker) | Worker | Reports whether the download service is configured, awake and holding a cookie jar |
+| `/health` (song service) | song service | Device, card, VRAM, and whether the models are loaded |
 
 ## Troubleshooting
 
@@ -360,9 +422,15 @@ rather than turned into a query.
   unreachable; the page falls back to the original link.
 - **Voice search does nothing** — the microphone needs a secure origin (https or
   localhost). On a LAN IP the browser blocks it.
-- **The live site plays the band but never sings, and there is no "Connect my
-  model" button** — the deployed page is older than `1ea803f`; redeploy so the
-  page can take a model address at runtime.
+- **The badge says "AI off"** — the song service is not running. Press **Start
+  the AI**, or run `tools\start_services.ps1`; the badge turns green when
+  `/health` answers.
+- **Start the AI does nothing** — `songsvc://` is not registered on this machine.
+  Any run of `tools/start_services.ps1` registers it, including the Startup entry.
+- **Lyrics take minutes instead of seconds** — the lyric model is running on the
+  CPU. `/health` shows the device; unset `LYRICS_DEVICE` to let it pick CUDA.
+- **A song takes about ten minutes** — 90 seconds of audio at 16 steps on one
+  card. `ACE_STEPS` trades quality for time, `ACE_MAX_SECONDS` for length.
 - **The tunnel answers 404 with no body** — cloudflared picked up
   `~/.cloudflared/config.yml`. Run the tunnel with
   `--config tools\bin\quick-tunnel.yml` as `start.ps1` does.
