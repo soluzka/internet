@@ -1958,6 +1958,25 @@
         };
         const sampleCache = new Map();
 
+        // The FluidR3 files are mastered quiet (peaks around 0.1), so each one is
+        // brought to a common level at load. Without this the instruments sit far
+        // under the drums and the mix sounds thin.
+        function normalizeBuffer(buffer) {
+            let peak = 0;
+            for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+                const data = buffer.getChannelData(channel);
+                for (let i = 0; i < data.length; i++) peak = Math.max(peak, Math.abs(data[i]));
+            }
+            if (peak > 0.001) {
+                const scale = 0.95 / peak;
+                for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+                    const data = buffer.getChannelData(channel);
+                    for (let i = 0; i < data.length; i++) data[i] *= scale;
+                }
+            }
+            return buffer;
+        }
+
         async function loadSamples(ctx, names) {
             const bank = {};
             await Promise.all(names.map(async name => {
@@ -1972,7 +1991,7 @@
                     try {
                         const response = await fetch('samples/' + name + '-' + note + '.mp3');
                         if (!response.ok) return null;
-                        const buffer = await ctx.decodeAudioData(await response.arrayBuffer());
+                        const buffer = normalizeBuffer(await ctx.decodeAudioData(await response.arrayBuffer()));
                         return { midi: notes[note], buffer };
                     } catch (err) {
                         return null;
