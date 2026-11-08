@@ -3007,6 +3007,20 @@
                     } catch (err) {}
                     startLibrarySong();
                 };
+                // A page cannot start a program: that is the browser's sandbox, not
+                // a missing feature. Windows can, once songsvc:// is registered here
+                // (tools\register_protocol.ps1), so the click hands the launcher to
+                // the operating system and the page simply waits for the services.
+                const wake = document.createElement('button');
+                wake.textContent = 'Start the AI on this PC';
+                wake.title = 'Runs tools\\start_services.ps1 on this computer';
+                wake.onclick = (clickEvent) => {
+                    clickEvent.stopPropagation();
+                    note.textContent = 'Asked Windows to start the local AI services. '
+                        + 'The model loads in about a minute; press the song button again after that.';
+                    window.location.href = 'songsvc://start';
+                };
+                actions.appendChild(wake);
                 actions.appendChild(connect);
 
                 // The words come first and are labelled, because they are the part

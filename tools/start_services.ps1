@@ -26,6 +26,12 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 
+# A line per run, so "the site started it" can be checked instead of assumed.
+try {
+    Add-Content -Path (Join-Path $root 'build\launcher_trace.txt') `
+        -Value ('{0:yyyy-MM-dd HH:mm:ss} launcher ran' -f (Get-Date))
+} catch { }
+
 function Say([string]$text) {
     if (-not $Quiet) { Write-Host $text }
 }
