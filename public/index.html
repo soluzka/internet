@@ -358,6 +358,56 @@
         }
         .genre-detail .genre-q { color: var(--text); }
         .genre-detail .genre-alt { margin-top: 6px; font-style: italic; }
+        /* Remix document: a theory of the listing and a brief for a new piece */
+        .remix-btn {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--text-dim);
+            font-size: 11px;
+            padding: 5px 10px;
+            border-radius: 999px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .remix-btn:hover { color: var(--text); border-color: var(--accent2); }
+        .remix-panel {
+            margin: 0 14px 12px;
+            padding: 12px 14px;
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            font-size: 11.5px;
+            line-height: 1.6;
+            color: var(--text-dim);
+        }
+        .remix-panel h4 {
+            margin: 0 0 6px;
+            font-size: 10px;
+            letter-spacing: 0.09em;
+            text-transform: uppercase;
+            color: var(--accent2);
+        }
+        .remix-panel section + section { margin-top: 12px; }
+        .remix-panel p { margin: 0 0 6px; }
+        .remix-panel ul { margin: 0; padding-left: 16px; }
+        .remix-panel .remix-hook {
+            color: var(--text);
+            font-style: italic;
+            white-space: pre-line;
+        }
+        .remix-panel .remix-actions { margin-top: 12px; display: flex; gap: 8px; }
+        .remix-panel .remix-copy {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--text);
+            font-size: 11px;
+            padding: 5px 10px;
+            border-radius: 7px;
+            cursor: pointer;
+        }
+        .remix-note { font-size: 10.5px; font-style: italic; opacity: 0.75; }
         .video-card .card-footer {
             display: flex;
             align-items: center;
@@ -1033,6 +1083,255 @@
             btn.textContent = opening ? 'hide' : 'why?';
         }
 
+        // --- Remix document ---
+        // A theory of the listing plus a brief for a new piece made from it.
+        // Everything is derived from the video's own words by a seeded writer,
+        // so the same video always yields the same document, on any host, with
+        // no model and no API key. It reads the listing, never the audio.
+        function hashString(text) {
+            let hash = 2166136261;
+            for (let i = 0; i < text.length; i++) {
+                hash ^= text.charCodeAt(i);
+                hash = Math.imul(hash, 16777619);
+            }
+            return hash >>> 0;
+        }
+
+        function pick(list, seed) {
+            return list[seed % list.length];
+        }
+
+        function parseDuration(value) {
+            const match = /^(\d+):(\d{1,2})(?::(\d{1,2}))?$/.exec(String(value || '').trim());
+            if (!match) return 0;
+            const first = Number(match[1]);
+            const second = Number(match[2]);
+            const third = match[3] ? Number(match[3]) : null;
+            return third === null ? first * 60 + second : first * 3600 + second * 60 + third;
+        }
+
+        // Genre decides tempo, key colour, instruments and palette. Without a
+        // genre the brief stays neutral rather than inventing a scene.
+        const REMIX_STYLES = {
+            dubstep: { bpm: 140, keys: ['F minor', 'G minor'], mood: 'heavy and patient, all weight on the low end', palette: 'sodium orange on wet asphalt',
+                instruments: ['half-time kick and snare', 'a wobbling sub that answers the vocal', 'granular riser', 'clipped rimshot fills'],
+                sample: 'Lift one phrase from the original, pitch it down an octave and let it be the only voice in the drop.' },
+            riddim: { bpm: 150, keys: ['D minor', 'E minor'], mood: 'mechanical and relentless', palette: 'chrome and cold blue',
+                instruments: ['square-wave bass stabs', 'programmed triplet hats', 'noise sweep', 'dry clap'],
+                sample: 'Take the original hardest consonant and chop it into a one-bar rhythm.' },
+            techno: { bpm: 132, keys: ['A minor', 'C minor'], mood: 'steady and hypnotic, built for a long room', palette: 'concrete grey with one red light',
+                instruments: ['four-on-the-floor kick', 'off-grid ride', 'detuned chord stab', 'long tape delay'],
+                sample: 'Loop two seconds of the original room tone and let it be the pad.' },
+            house: { bpm: 124, keys: ['B minor', 'F# minor'], mood: 'warm, rolling and human', palette: 'sun-bleached yellow and dusty pink',
+                instruments: ['shuffled hats', 'round bassline', 'Rhodes chords', 'hand percussion'],
+                sample: 'Chop the original vocal into a single syllable and repeat it as the hook.' },
+            'drum and bass': { bpm: 174, keys: ['G minor', 'D minor'], mood: 'restless, fast and wide open', palette: 'petrol blue and hard white',
+                instruments: ['breakbeat edits', 'reese bass', 'shaker layer', 'reverse cymbal'],
+                sample: 'Rebuild the original drum hit into a two-step break and keep its reverb tail.' },
+            jungle: { bpm: 168, keys: ['A minor', 'E minor'], mood: 'chopped, ecstatic and loose', palette: 'deep green with gold dust',
+                instruments: ['amen-style cuts', 'sub bass', 'dub chords', 'vocal stabs'],
+                sample: 'Take the original snare, stretch it, and answer it with the source vocal.' },
+            reggae: { bpm: 74, keys: ['A minor', 'D minor'], mood: 'patient and spacious, everything sitting back', palette: 'faded green and brass',
+                instruments: ['one-drop drums', 'rounded bass', 'skank guitar', 'melodica'],
+                sample: 'Keep the original vocal dry and put it against a one-drop rebuilt from scratch.' },
+            dub: { bpm: 72, keys: ['E minor', 'A minor'], mood: 'deep, echo-heavy and slow to arrive', palette: 'indigo and tape hiss',
+                instruments: ['one-drop drums', 'sub bass', 'spring reverb throws', 'melodica'],
+                sample: 'Send one phrase of the original through a long tape delay and mix it as the lead.' },
+            'hip hop': { bpm: 88, keys: ['C minor', 'F minor'], mood: 'dusty and conversational', palette: 'sepia with a single neon accent',
+                instruments: ['boom-bap drums', 'upright bass', 'vinyl-textured keys', 'finger snaps'],
+                sample: 'Loop four bars of the original and leave the crackle in.' },
+            trap: { bpm: 78, keys: ['F minor', 'G# minor'], mood: 'still and heavy, all space between hits', palette: 'black glass and violet',
+                instruments: ['808 slides', 'triplet hats', 'bell melody', 'wide clap'],
+                sample: 'Take the original hook and let it decay under an 808 slide.' },
+            ambient: { bpm: 68, keys: ['D minor', 'B minor'], mood: 'slow, open and unresolved', palette: 'white fog and pale blue',
+                instruments: ['sustained pad', 'field recording', 'felt piano', 'distant bell'],
+                sample: 'Stretch a single second of the original into a forty-second pad.' },
+            trance: { bpm: 138, keys: ['A minor', 'E minor'], mood: 'euphoric and forward-moving', palette: 'sunrise gold on deep blue',
+                instruments: ['rolling bass', 'supersaw chords', 'long build', 'plucked lead'],
+                sample: 'Use the original melody as the breakdown theme, then return it twice as wide.' },
+            garage: { bpm: 134, keys: ['F minor', 'C minor'], mood: 'skipping and intimate', palette: 'mint green and wet pavement',
+                instruments: ['shuffled two-step drums', 'rubbery bass', 'chopped vocal', 'detuned keys'],
+                sample: 'Cut the original vocal into a stutter and place it off the grid.' },
+            'lo-fi': { bpm: 82, keys: ['C minor', 'A minor'], mood: 'soft and half-awake', palette: 'mustard and worn paper',
+                instruments: ['soft drums', 'tape-wobbled keys', 'muted bass', 'rain texture'],
+                sample: 'Run the original chord bed through tape wobble and play it two octaves down.' },
+        };
+
+        const REMIX_NEUTRAL = { bpm: 110, keys: ['A minor', 'D minor'], mood: 'open and curious, not yet committed to a scene', palette: 'ink black with one warm light',
+            instruments: ['steady kick and rimshot', 'held chord bed', 'one melodic motif', 'room noise as texture'],
+            sample: 'Choose one gesture from the original — a word, a chord, a hit — and build everything else around it.' };
+
+        // Words that say nothing about the content; dropped before the theory.
+        const REMIX_NOISE = new Set(['official', 'video', 'audio', 'lyrics', 'lyric', 'hd', 'hq', 'full', 'new', 'the', 'and', 'with', 'from', 'that', 'this', 'for', 'you', 'your', 'feat', 'ft', 'prod', 'remix', 'edit', 'clip', 'music']);
+
+        function remixKeywords(title) {
+            return String(title || '')
+                .toLowerCase()
+                .replace(/[\(\)\[\]{}|/\\]/g, ' ')
+                .split(/[^a-z0-9']+/)
+                .filter(word => word.length > 2 && !REMIX_NOISE.has(word))
+                .filter((word, index, all) => all.indexOf(word) === index)
+                .slice(0, 4);
+        }
+
+        function remixStructure(seconds, seed) {
+            const long = seconds >= 900;
+            const short = seconds > 0 && seconds <= 210;
+            const shapes = [
+                [['0:00', 'one held tone, nothing else'], ['0:40', 'drums arrive filtered'], ['1:30', 'the drop - the sample from the original'], ['2:40', 'breakdown, everything out but the voice'], ['3:20', 'second drop, doubled']],
+                [['0:00', 'room noise and a single motif'], ['0:30', 'kick locks in, bass joins'], ['1:15', 'first peak'], ['2:00', 'strip back to the motif'], ['2:45', 'rebuild louder than the first peak']],
+                [['0:00', 'vocal fragment, half-speed'], ['0:45', 'full rhythm enters'], ['1:40', 'the motif opens up into chords'], ['2:30', 'breakdown with the source untouched'], ['3:10', 'final pass, wider and slower']],
+            ];
+            // Unsigned maths throughout: a hash above 2^31 would turn negative
+            // with a signed shift and index past the end of the array.
+            const base = shapes[Math.abs(seed) % shapes.length] || shapes[0];
+            if (short) return base.slice(0, 3);
+            if (!long) return base;
+            return base.concat([['5:00', 'theme returns, now in a new key'], ['8:00', 'long dissolve into the room tone']]);
+        }
+
+        function buildRemix(result) {
+            const seed = hashString(result.url || result.title || 'video');
+            const title = (result.title || 'Untitled listing').trim();
+            const description = (result.description || '').trim();
+            const source = result.source || 'the source site';
+            const text = (title + ' ' + description + ' ' + source).toLowerCase();
+            const genre = (result.genre && result.genre.genre) || '';
+            const runnerUp = result.genre && result.genre.alternatives && result.genre.alternatives[0]
+                ? result.genre.alternatives[0].genre : '';
+            const style = REMIX_STYLES[genre] || REMIX_NEUTRAL;
+            const seconds = parseDuration(result.duration);
+            const words = remixKeywords(title);
+            const wordA = words[0] || 'the hook';
+            const wordB = words[1] || 'the low end';
+
+            // What kind of thing the link is, judged from the words around it.
+            const formats = [];
+            if (/\bmix\b|\bset\b|live|session|festival|b2b/.test(text)) formats.push('a continuous performance rather than separate songs');
+            if (/tutorial|how to|lesson|explain|guide/.test(text)) formats.push('an instructional walkthrough');
+            if (/review|reaction|unbox|first listen/.test(text)) formats.push('a response to something else rather than an original piece');
+            if (/podcast|interview|talk|episode/.test(text)) formats.push('talk-led, with the music as framing');
+            if (/beat|instrumental|type beat|loop/.test(text)) formats.push('a loop or beat built to be rapped over');
+            if (/official|video clip|music video/.test(text)) formats.push('a produced release with a visual edit');
+            if (!formats.length) formats.push('a single self-contained piece');
+
+            const shape = seconds >= 1200 ? 'a long-form sitting, closer to a broadcast than a track'
+                : seconds >= 420 ? 'a set with room to build and breathe'
+                : seconds >= 210 ? 'a single track with space for one turn'
+                : seconds > 0 ? 'a short statement, one idea stated once'
+                : 'a piece whose length the listing does not give';
+
+            const opening = genre
+                ? `Read from the listing only, this is a ${genre} record` +
+                  (result.genre && result.genre.confidence
+                      ? ` (${Math.round(result.genre.confidence * 100)}% fit on the words alone)` : '') + '.'
+                : 'The listing never names its scene, so this reads as an unclassified piece.';
+
+            const evidence = words.length
+                ? `The words doing the work are “${words.join('”, “')}”, which is what pulls it toward ${genre || 'its current shape'}.`
+                : 'There is almost no text to read, so everything below is a shape, not a claim.';
+
+            const theory = [
+                `${opening} ${evidence}`,
+                `It looks like ${formats.slice(0, 2).join(' and ')}: ${shape}.` +
+                    (runnerUp ? ` If the words are being read too narrowly, the nearest other reading is ${runnerUp}.` : ''),
+            ];
+
+            const read = seconds > 0
+                ? `At ${result.duration}, expect ${seconds >= 420 ? 'a slow build with at least two peaks' : 'one arc: intro, peak, out'}. ${pick([
+                    'The interesting material is probably in the first thirty seconds and the last thirty.',
+                    'Listen for the moment the rhythm drops out; that is usually where the idea actually sits.',
+                    'The listing promises more than the duration can hold, so treat the title as a mood rather than a set list.',
+                ], seed)}`
+                : `No duration is listed. ${pick([
+                    'Assume a complete piece rather than a fragment.',
+                    'Treat it as a single idea until listening proves otherwise.',
+                ], seed >>> 3)}`;
+
+            const bpm = style.bpm + ((seed % 5) - 2);
+            const remix = {
+                title: `${wordA.replace(/^./, c => c.toUpperCase())} / ${wordB} — ${genre || 'unclassified'} rework`,
+                tempo: `${bpm} BPM`,
+                key: pick(style.keys, seed >>> 5),
+                mood: style.mood,
+                instruments: style.instruments,
+                structure: remixStructure(seconds, seed >>> 7),
+                hook: pick([
+                    `${wordA} in the low end,\n${wordB} left in the light.`,
+                    `Keep the ${wordA} loop,\nlet the ${wordB} answer it.`,
+                    `Everything drops but ${wordA},\nand ${wordB} carries it out.`,
+                ], seed >>> 11),
+                visuals: `Palette: ${style.palette}. Cut on the transients, hold one frame through each drop, and let the source clip reappear once — degraded — at the second peak.`,
+                sample: style.sample,
+            };
+
+            const note = 'Inferred from the listing text' +
+                (genre ? '' : ' (no genre was detected for this video)') +
+                ' — the audio and picture were not analysed, so treat this as a starting point to argue with.';
+
+            return { theory, read, remix, note, genre, words };
+        }
+
+        function remixToText(doc) {
+            const lines = [];
+            lines.push('THEORY');
+            doc.theory.forEach(line => lines.push(line));
+            lines.push('', 'WHAT THE LINK SHOWS', doc.read);
+            lines.push('', 'REMIX BRIEF', `${doc.remix.title} — ${doc.remix.tempo}, ${doc.remix.key}, ${doc.remix.mood}`);
+            doc.remix.instruments.forEach(item => lines.push(`- ${item}`));
+            lines.push('', 'STRUCTURE');
+            doc.remix.structure.forEach(step => lines.push(`${step[0]}  ${step[1]}`));
+            lines.push('', 'HOOK', doc.remix.hook);
+            lines.push('', 'VISUALS', doc.remix.visuals);
+            lines.push('', 'SAMPLE', doc.remix.sample);
+            lines.push('', doc.note);
+            return lines.join('\n');
+        }
+
+        function toggleRemix(event, btn, cardId) {
+            event.stopPropagation();
+            const card = document.getElementById(cardId);
+            if (!card) return;
+            const panel = card.querySelector('.remix-panel');
+            if (!panel) return;
+            const opening = panel.hidden;
+            if (opening && !panel.dataset.rendered) {
+                const doc = (window._remixDocs || {})[cardId];
+                if (doc) {
+                    const step = item => `<li><span class="genre-q">${escapeHtml(item[0])}</span> ${escapeHtml(item[1])}</li>`;
+                    panel.innerHTML = `
+                        <section><h4>Theory</h4>${doc.theory.map(line => `<p>${escapeHtml(line)}</p>`).join('')}</section>
+                        <section><h4>What the link shows</h4><p>${escapeHtml(doc.read)}</p></section>
+                        <section><h4>Remix brief</h4>
+                            <p><strong>${escapeHtml(doc.remix.title)}</strong> — ${escapeHtml(doc.remix.tempo)}, ${escapeHtml(doc.remix.key)}, ${escapeHtml(doc.remix.mood)}.</p>
+                            <ul>${doc.remix.instruments.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
+                        </section>
+                        <section><h4>Structure</h4><ul>${doc.remix.structure.map(step).join('')}</ul></section>
+                        <section><h4>Hook</h4><p class="remix-hook">${escapeHtml(doc.remix.hook)}</p></section>
+                        <section><h4>Visuals</h4><p>${escapeHtml(doc.remix.visuals)}</p></section>
+                        <section><h4>Sample strategy</h4><p>${escapeHtml(doc.remix.sample)}</p></section>
+                        <p class="remix-note">${escapeHtml(doc.note)}</p>
+                        <div class="remix-actions"><button class="remix-copy" onclick="copyRemix(event, '${cardId}')">Copy brief</button></div>`;
+                    panel.dataset.rendered = '1';
+                }
+            }
+            panel.hidden = !opening;
+            btn.textContent = opening ? 'Hide remix' : 'Remix';
+        }
+
+        function copyRemix(event, cardId) {
+            event.stopPropagation();
+            const doc = (window._remixDocs || {})[cardId];
+            if (!doc) return;
+            const text = remixToText(doc);
+            const done = () => showToast('success', 'Remix brief copied', 'Paste it into your notes or a generator.', { autoClose: 3500 });
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(done).catch(() => showToast('error', 'Could not copy', 'Select the text instead.', { autoClose: 5000 }));
+            } else {
+                showToast('info', 'Copy unavailable', 'Select the text in the panel instead.', { autoClose: 5000 });
+            }
+        }
+
         function createVideoCard(result) {
             const card = document.createElement('div');
             card.className = 'video-card';
@@ -1052,6 +1351,25 @@
 
             const genreHtml = renderGenre(result.genre);
 
+            // Built once per card and kept off the DOM until the panel is opened:
+            // a few hundred documents are not worth rendering up front. A remix
+            // that cannot be built must never cost the user the whole card, so
+            // it is contained here and simply not offered.
+            let remixDoc = null;
+            try {
+                remixDoc = buildRemix(result);
+            } catch (err) {
+                remixDoc = null;
+            }
+            const remixHtml = remixDoc ? '<div class="remix-panel" hidden></div>' : '';
+            const remixButton = remixDoc
+                ? `<button class="remix-btn" onclick="toggleRemix(event, this, '${cardId}')" title="A theory of this listing and a brief for a new piece made from it">Remix</button>`
+                : '';
+            if (remixDoc) {
+                window._remixDocs = window._remixDocs || {};
+                window._remixDocs[cardId] = remixDoc;
+            }
+
             card.innerHTML = `
                 <div class="thumb-wrapper" onclick="openPlayer('${escapeAttr(result.url)}', '${escapeAttr(result.title)}', '${escapeAttr(result.description || '')}')">
                     ${thumbHtml}
@@ -1063,6 +1381,7 @@
                     <div class="card-desc">${escapeHtml(result.description || '')}</div>
                     ${genreHtml}
                 </div>
+                ${remixHtml}
                 <div class="dl-progress" id="dlprog-${cardId}">
                     <div class="dl-progress-bar"><div class="dl-progress-fill"></div></div>
                     <div class="dl-progress-text">Preparing...</div>
@@ -1070,6 +1389,7 @@
                 <div class="card-footer">
                     ${scoreHtml}
                     <div class="footer-actions">
+                        ${remixButton}
                         <a class="open-link" href="${escapeAttr(result.url)}" target="_blank" rel="noopener noreferrer"
                            onclick="event.stopPropagation()" title="Open this video on the original site">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>
@@ -1088,6 +1408,7 @@
                 if (!socket) return;
                 if (e.target.closest('.download-btn') || e.target.closest('.dl-progress')) return;
                 if (e.target.closest('.genre-why') || e.target.closest('.genre-detail')) return;
+                if (e.target.closest('.remix-btn') || e.target.closest('.remix-panel')) return;
                 socket.emit('record_click', {
                     url: result.url,
                     title: result.title,
