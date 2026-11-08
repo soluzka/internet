@@ -58,6 +58,26 @@ MAX_JOBS_PER_IP = int(os.environ.get('MAX_JOBS_PER_IP', '2'))
 # at a cookies file exported from a browser is the usual workaround; the file is
 # never shipped with the service.
 COOKIES_FILE = os.environ.get('YT_COOKIES_FILE', '')
+# Hosted platforms give you environment variables, not a file picker, so the
+# cookie jar can also arrive as text. Both end up as one netscape-format file
+# that yt-dlp is pointed at.
+COOKIES_TEXT = os.environ.get('YT_COOKIES', '')
+
+
+def _cookie_path() -> str:
+    """The cookie file yt-dlp should use, or an empty string when there is none."""
+    if COOKIES_FILE and os.path.exists(COOKIES_FILE):
+        return COOKIES_FILE
+    if not COOKIES_TEXT.strip():
+        return ''
+    path = os.path.join(tempfile.gettempdir(), 'yt_cookies.txt')
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        body = COOKIES_TEXT.strip()
+        if not body.startswith('# HTTP Cookie File'):
+            body = '# HTTP Cookie File\n' + body
+        with open(path, 'w', encoding='utf-8') as handle:
+            handle.write(body + '\n')
+    return path
 
 _jobs: Dict[str, dict] = {}
 _jobs_lock = threading.Lock()
@@ -133,8 +153,9 @@ def _run_download(token: str, url: str) -> None:
         # A stalled host should fail the job instead of hanging forever.
         'socket_timeout': 30,
     }
-    if COOKIES_FILE and os.path.exists(COOKIES_FILE):
-        ydl_opts['cookiefile'] = COOKIES_FILE
+    jar = _cookie_path()
+    if jar:
+        ydl_opts['cookiefile'] = jar
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -191,7 +212,17 @@ def _friendly_error(message: str, url: str) -> str:
 
 @app.route('/health')
 def health():
-    return jsonify({'ok': True, 'max_height': MAX_HEIGHT})
+    # A hosted deploy is checked from the outside, so this says enough to tell a
+    # working service from one that is awake but has no cookie jar.
+    with _jobs_lock:
+        active = len([job for job in _jobs.values()
+                      if job.get('status') in ('queued', 'downloading', 'processing')])
+    return jsonify({
+        'ok': True,
+        'max_height': MAX_HEIGHT,
+        'cookies': bool(_cookie_path()),
+        'active_jobs': active,
+    })
 
 
 @app.route('/api/download', methods=['POST', 'OPTIONS'])

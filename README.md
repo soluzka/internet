@@ -311,7 +311,9 @@ there the app answers on its own origin.
   the desktop app on a home connection. `YT_COOKIES_FILE` can help; never commit
   that file.
 - Free instances sleep when idle, so the first download after a pause waits a
-  few seconds for the container to wake.
+  few seconds for the container to wake. `https://<your worker>/api/health`
+  says whether the service is configured, reachable and holding cookies, which
+  is faster than diagnosing a failed download.
 - The service caps work so a public endpoint cannot be used as a free download
   farm: `MAX_HEIGHT` (720 by default), `MAX_ACTIVE_JOBS`, `MAX_JOBS_PER_IP`.
 
@@ -345,6 +347,8 @@ rather than turned into a query.
 | `MAX_HEIGHT` | downloader | Download resolution cap (default 720) |
 | `MAX_ACTIVE_JOBS` / `MAX_JOBS_PER_IP` | downloader | Concurrency limits |
 | `YT_COOKIES_FILE` | downloader | Optional yt-dlp cookies file |
+| `YT_COOKIES` | downloader | The same cookie jar as text, for hosts that only give you environment variables |
+| `/api/health` | Worker | Reports whether the download service is configured, awake and holding a cookie jar |
 
 ## Troubleshooting
 

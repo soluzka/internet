@@ -26,6 +26,10 @@ const DOWNLOAD_ROUTES = [
 // clip never leaves Cloudflare's edge, and the free neuron allowance covers far
 // more than a person can speak in a day.
 const TRANSCRIBE_ROUTE = /^\/api\/transcribe$/i;
+
+// Open this in a browser to see whether the download service is configured,
+// awake and holding a cookie jar, instead of guessing from a failed download.
+const HEALTH_ROUTE = /^\/api\/health$/i;
 const WHISPER_MODEL = '@cf/openai/whisper-large-v3-turbo';
 const MAX_CLIP_BYTES = 8 * 1024 * 1024;
 
@@ -41,12 +45,49 @@ export default {
       return transcribe(request, env);
     }
 
+    if (HEALTH_ROUTE.test(url.pathname)) {
+      return downloaderHealth(env);
+    }
+
     return env.ASSETS.fetch(request);
   },
 };
 
+function downloadBase(env) {
+  return String(env.DOWNLOAD_API || '').trim().replace(/\/+$/, '');
+}
+
+async function downloaderHealth(env) {
+  const base = downloadBase(env);
+  if (!base) {
+    return json({
+      configured: false,
+      error: 'Set DOWNLOAD_API to the URL of the downloader service.',
+    }, 200);
+  }
+  try {
+    const upstream = await fetch(base + '/health', { headers: { accept: 'application/json' } });
+    const body = await upstream.json().catch(() => ({}));
+    return json({
+      configured: true,
+      url: base,
+      reachable: upstream.ok,
+      status: upstream.status,
+      downloader: body,
+    }, 200);
+  } catch (err) {
+    return json({
+      configured: true,
+      url: base,
+      reachable: false,
+      error: 'The download service did not answer. Free instances sleep when idle: '
+        + 'open this again in a minute, or open the service URL directly to wake it.',
+    }, 200);
+  }
+}
+
 async function download(request, env, url) {
-  const base = String(env.DOWNLOAD_API || '').trim().replace(/\/+$/, '');
+  const base = downloadBase(env);
   if (!base) {
     return json({
       error: 'No downloader is set up for this deployment yet. ' +
@@ -67,9 +108,16 @@ async function download(request, env, url) {
   try {
     upstream = await fetch(base + url.pathname + url.search, init);
   } catch (err) {
-    return json({
-      error: 'The download service could not be reached. It may be asleep or down.',
-    }, 502);
+    // Say which of the two it is: a sleeping free instance comes back on its own,
+    // a wrong URL never will.
+    let detail = 'It may be asleep or down.';
+    try {
+      const ping = await fetch(base + '/health', { headers: { accept: 'application/json' } });
+      if (ping.ok) detail = 'It answered a health check just now, so try the download again.';
+    } catch (ignored) {
+      detail = 'Its health check did not answer either, so it is asleep or the URL is wrong.';
+    }
+    return json({ error: 'The download service could not be reached. ' + detail }, 502);
   }
 
   // Pass the service's answer straight through, headers included, so the file's
