@@ -1,7 +1,7 @@
 # Does this machine come back on its own after a restart?
-# Checks the three links in the chain and the state at the end of it: the Startup
-# entry, the songsvc:// target the site's button uses, and whether both services
-# are answering now.
+# Checks every link in the chain and the state at the end of it: the Run key and
+# Startup entry, the watchdog, the songsvc:// target the site's button uses, and
+# whether both services are answering now.
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
@@ -13,6 +13,18 @@ if (Test-Path $startup) {
 } else {
     "MISSING: $startup  (run tools\install_autostart.ps1)"
 }
+
+''
+'--- run key (what actually starts it at logon) ---'
+$run = (Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'AI song services' -ErrorAction SilentlyContinue).'AI song services'
+if ($run) { $run } else { "MISSING (run tools\install_autostart.ps1)" }
+
+''
+'--- watchdog ---'
+$watch = @(Get-CimInstance Win32_Process -Filter "Name like '%powershell%'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -like '*start_services.ps1*' -and $_.CommandLine -like '*-Watch*' })
+if ($watch.Count) { foreach ($w in $watch) { "running: pid $($w.ProcessId), started $($w.CreationDate)" } }
+else { 'NOT RUNNING (run tools\install_autostart.ps1)' }
 
 ''
 '--- songsvc protocol target ---'

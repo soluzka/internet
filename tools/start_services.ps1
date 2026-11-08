@@ -9,10 +9,17 @@
                                  composed song does not also pay for the load
 
     Safe to run repeatedly: each service is probed first and only started when it
-    is not answering. Run it from the Startup folder and the whole thing comes
-    back after a reboot with no one clicking anything.
+    is not answering. Run it at logon and the whole thing comes back after a
+    reboot with no one clicking anything.
+
+    -Watch stays running afterwards and checks both ports every two minutes,
+    starting a service again if it has gone away. A logon entry only covers a
+    reboot; this covers the machine staying on while a service dies, which is
+    what happened on 8 Nov 2026 - the crash took both services and nothing was
+    left to bring them back.
 
     Usage:  powershell -NoProfile -ExecutionPolicy Bypass -File tools\start_services.ps1
+            powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File tools\start_services.ps1 -Watch
 #>
 
 [CmdletBinding()]
@@ -20,7 +27,8 @@ param(
     [int]$DownloadPort = 8080,
     [int]$SongPort = 8090,
     [switch]$NoWarm,
-    [switch]$Quiet
+    [switch]$Quiet,
+    [switch]$Watch
 )
 
 $ErrorActionPreference = 'Stop'
@@ -60,6 +68,13 @@ function Ensure-Protocol {
 }
 
 Ensure-Protocol
+
+function Trace([string]$text) {
+    try {
+        Add-Content -Path (Join-Path $root 'build\launcher_trace.txt') `
+            -Value ('{0:yyyy-MM-dd HH:mm:ss} {1}' -f (Get-Date), $text)
+    } catch { }
+}
 
 function Answers([int]$port) {
     $code = & curl.exe -s -o NUL -w '%{http_code}' --max-time 3 "http://127.0.0.1:$port/health"
@@ -129,3 +144,43 @@ if (Answers $SongPort) {
 
 $songHealth = & curl.exe -s --max-time 4 "http://127.0.0.1:$SongPort/health"
 if ($songHealth) { Say "song now: $songHealth" } else { Say 'song: still loading, check again in a minute' }
+
+# --- watchdog ------------------------------------------------------------
+# Only one watchdog should exist: two would fight over the same 8090 and each
+# would restart a service the other had just started.
+function Watchers {
+    Get-CimInstance Win32_Process -Filter "Name like '%powershell%'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like '*start_services.ps1*' -and $_.CommandLine -like '*-Watch*' -and $_.ProcessId -ne $PID }
+}
+
+if ($Watch) {
+    $others = @(Watchers)
+    if ($others.Count -gt 0) {
+        Trace "watchdog already running (pid $($others[0].ProcessId)), not adding another"
+        Say 'watchdog already running'
+        return
+    }
+
+    Trace 'watchdog started'
+    Say 'watching both services every 2 minutes'
+
+    while ($true) {
+        Start-Sleep -Seconds 120
+
+        # A service that is answering needs nothing. One whose process exists but
+        # is not answering is still importing torch or waiting on the model, so
+        # it is left alone; only a port with no process behind it is restarted.
+        $down = @()
+        if (-not (Answers $DownloadPort) -and -not (Starting '*downloader_service*')) { $down += 'downloader' }
+        if (-not (Answers $SongPort) -and -not (Starting '*song_service*')) { $down += 'song service' }
+
+        if ($down.Count -gt 0) {
+            $which = $down -join ' and '
+            Trace "watchdog: $which down, restarting"
+            Say "$which down, restarting"
+            Start-Process -FilePath 'powershell' -WindowStyle Hidden -ArgumentList @(
+                '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath, '-Quiet'
+            ) | Out-Null
+        }
+    }
+}

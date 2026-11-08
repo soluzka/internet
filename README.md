@@ -25,11 +25,11 @@ It runs two ways from one codebase:
 | `downloader_service/` | Small Flask container that runs yt-dlp for the static site |
 | `song_service/` | The local lyric and music models (GPU, 8090) |
 | `tools/start_services.ps1` | Starts the downloader and the song service, and keeps `songsvc://` registered |
-| `tools/install_autostart.ps1` | Puts that launcher in your Startup folder, so both return at logon |
+| `tools/install_autostart.ps1` | Adds the logon entry and starts the watchdog, so both return and stay up |
 | `tools/register_protocol.ps1` | Registers `songsvc://` so the site's Start the AI button can launch it |
 | `start.cmd` / `start.ps1` | One click: song service, site and tunnel |
 | `data/video_index.db` | Committed snapshot of the index |
-| `build/` | Local scaffolding, almost all of it ignored; the six check scripts in it are tracked — see below |
+| `build/` | The check scripts: what a build generates is ignored, the scripts are not — see below |
 
 ### The `build/` folder
 
@@ -269,12 +269,13 @@ torch sees no card, and `AI off` when the service is not running.
 
 ![The header: Start the AI beside Song designer, and the CUDA badge reading the card from /health](public/gpu-chip.png)
 
-Three things start it, and none of them need you to run a script:
+Four things start it, and none of them need you to run a script:
 
 | Trigger | How |
 | --- | --- |
 | Clicking **Start the AI** | `songsvc://` → `tools/start_services.ps1` |
-| Logging in to Windows | Startup entry written by `tools/install_autostart.ps1` |
+| Logging in to Windows | `HKCU\...\Run` key and Startup entry, from `tools/install_autostart.ps1` |
+| A service dying while the PC stays on | The watchdog re-runs the launcher within two minutes |
 | Running it by hand | `tools/start_services.ps1` (safe to repeat) |
 
 The launcher repairs the `songsvc://` registration on every run — missing, or
@@ -282,9 +283,24 @@ pointing at a folder that has moved — so the button keeps working without
 re-registering. It writes one line per run to `build\launcher_trace.txt`, which
 is how "the site started it" can be checked rather than assumed.
 
-Two things it cannot do: start anything on a machine where the scheme is not
-registered (your phone, another computer), and render a song without the PC —
-no Cloudflare model composes music, as the section further down explains.
+None of these is Task Scheduler, because registering a task returns *Access
+denied* without administrator rights. The logon entry is a Run key plus the
+Startup folder entry, and the watchdog is the launcher started with `-Watch`: it
+sleeps two minutes at a time and restarts a service whose port has nothing behind
+it. A port with a process behind it is left alone, so a service that is still
+importing torch is never started twice. Verified on 8 Nov 2026: the song service
+was killed outright and `/health` answered again 18 seconds after the watchdog
+noticed.
+
+That logon entry matters because the Startup folder alone has already failed
+here: on 8 Nov 2026 the PC booted at 18:41:26, Explorer logged in at 18:41:38,
+and the entry produced no run at all until the launcher was called by hand.
+
+Three things it cannot do: start anything on a machine where the scheme is not
+registered (your phone, another computer), start a local program without a click
+— browsers only allow `songsvc://` from a user gesture, so opening the page can
+detect the AI but not boot it — and render a song without the PC, since no
+Cloudflare model composes music, as the section further down explains.
 
 The badge is the quickest way to answer "is it actually on the GPU?" — it says
 so in the header, from the service's own answer, without opening a console.
