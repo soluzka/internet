@@ -3592,8 +3592,15 @@
             'service-not-allowed': 'Speech recognition is blocked for this page. Check the browser microphone permissions.',
             'audio-capture': 'No microphone was found. Plug one in or check your sound settings.',
             'no-speech': 'I did not hear anything. Try speaking again.',
-            'network': 'The speech recognition service is unreachable. Check your connection and try again.'
+            'network': 'The speech recognition service is unreachable. Check your connection and try again.',
+            // The transcript comes from whisper inside the desktop app, so a
+            // closed app is the common cause of voice search failing here.
+            'app-down': 'Voice search runs in the desktop app on this machine. Start it, then try again - or type your search instead.'
         };
+
+        // Set when the clip could not reach the app, so the browser engine's own
+        // failure is reported as the missing app rather than a broken connection.
+        let voiceNeedsApp = false;
 
         // Ask for the microphone once and keep the stream for recording.
         async function requestMicStream() {
@@ -3712,10 +3719,16 @@
                 isVoiceSearch = true;
                 setTimeout(() => doSearch(), 300);
             } catch (err) {
-                console.log('Server transcription unavailable, trying the browser engine:', err.message);
+                // A fetch that fails outright means nothing is listening on 5001:
+                // the app is closed rather than the transcription having failed.
+                const unreachable = /Failed to fetch|NetworkError|Load failed/i.test(String((err && err.message) || ''));
+                voiceNeedsApp = unreachable;
+                console.log(unreachable
+                    ? 'The desktop app is not running here, trying the browser speech engine'
+                    : 'Server transcription unavailable, trying the browser engine:', (err && err.message) || err);
                 if (!startBrowserRecognition()) {
                     voiceTranscript.textContent = '';
-                    showToast('error', 'Voice error', VOICE_ERRORS['network'], { autoClose: 7000 });
+                    showToast('error', 'Voice error', VOICE_ERRORS[unreachable ? 'app-down' : 'network'], { autoClose: 7000 });
                 }
             }
         }
@@ -3753,6 +3766,11 @@
                 const code = event.error || '';
                 // 'aborted' also fires for a normal stop(); don't nag about it.
                 if (code === 'aborted') return;
+                // The clip never reached the app, so its absence is the real reason.
+                if (voiceNeedsApp && code === 'network') {
+                    showToast('error', 'Voice error', VOICE_ERRORS['app-down'], { autoClose: 7000 });
+                    return;
+                }
                 showToast('error', 'Voice error', VOICE_ERRORS[code] || ('Voice search failed (' + (code || 'unknown') + ')'), { autoClose: 7000 });
             };
 
