@@ -42,7 +42,8 @@
             padding: 16px 24px;
             display: flex;
             align-items: center;
-            gap: 16px;
+            flex-wrap: wrap;
+            gap: 10px 16px;
             position: sticky;
             top: 0;
             z-index: 100;
@@ -552,6 +553,10 @@
             white-space: nowrap;
         }
         .library-song-btn:hover { background: rgba(0, 206, 201, 0.2); }
+        /* Beside the song button and always visible: the AI lives on this machine,
+           and this is the one control that can bring it up from the page. */
+        .wake-btn { opacity: 0.85; }
+        .wake-btn[data-state="ready"] { opacity: 1; border-color: rgba(0, 206, 201, 0.6); }
         .library-song-btn[disabled] { opacity: 0.55; cursor: default; }
 
         /* Generate: an edited link for the same video, built from its own plan */
@@ -724,8 +729,12 @@
         @keyframes spin { to { transform: rotate(360deg); } }
 
         /* Responsive */
-        @media (max-width: 600px) {
+        @media (max-width: 900px) {
+            /* The two buttons have to stay reachable; the counters are the part
+               that can go when the header runs out of width. */
             .header-stats { display: none; }
+        }
+        @media (max-width: 600px) {
             .conn-chip { margin-left: auto; font-size: 11px; padding: 5px 10px; }
             .search-title { font-size: 24px; }
             .results-container { grid-template-columns: 1fr; }
@@ -750,6 +759,8 @@
         </div>
         <button class="library-song-btn" id="librarySongBtn" onclick="startLibrarySong()"
                 title="Design one song from the tracks you found">Song designer</button>
+        <button class="library-song-btn wake-btn" id="wakeBtn" onclick="wakeLocalAI()"
+                title="Starts the AI services on this computer and waits until they answer">Start the AI</button>
         <div class="conn-chip" id="connChip" data-state="connecting"
              title="Checking the connection to the search server">
             <span class="conn-dot"></span>
@@ -2851,6 +2862,44 @@
                 }
             }
             throw new Error('the model took too long to finish');
+        }
+
+        // The AI runs on this machine, so the page cannot start it: the browser
+        // has no way to launch a process. Windows does, through the songsvc://
+        // scheme registered here (tools\register_protocol.ps1), so this hands the
+        // launcher to the operating system and then watches for the service. The
+        // models take a minute to load after the port is open, which is why the
+        // button says starting until health answers rather than just until the
+        // browser is done.
+        function wakeLocalAI() {
+            const btn = document.getElementById('wakeBtn');
+            if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; btn.dataset.state = 'starting'; }
+            try {
+                window.location.href = 'songsvc://start';
+            } catch (err) {
+                if (btn) { btn.disabled = false; btn.textContent = 'Start the AI'; }
+                return;
+            }
+            let tries = 0;
+            const finish = (ready) => {
+                if (!btn) return;
+                btn.disabled = false;
+                btn.textContent = ready ? 'AI ready' : 'Start the AI';
+                btn.dataset.state = ready ? 'ready' : '';
+                if (!ready) btn.title = 'The launcher did not answer - is songsvc:// registered on this PC?';
+            };
+            const timer = setInterval(async () => {
+                tries += 1;
+                let ready = false;
+                try {
+                    const response = await fetchBounded('http://127.0.0.1:8090/health', {}, 3000);
+                    ready = response.ok;
+                } catch (err) {}
+                if (ready || tries >= 40) {
+                    clearInterval(timer);
+                    finish(ready);
+                }
+            }, 3000);
         }
 
         async function startLibrarySong() {
