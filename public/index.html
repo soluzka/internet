@@ -1836,11 +1836,23 @@
         // A seed makes every press a new song, while the same seed always gives
         // the same one back. Nothing here is stored: the seed is the recipe.
         function libraryTempo(summary, seed) {
-            const values = summary.genres.map(genre => (REMIX_STYLES[genre.name] || REMIX_NEUTRAL).bpm);
-            if (!values.length) return 118 + (seed % 5);
-            const average = values.reduce((sum, value) => sum + value, 0) / values.length;
-            const jitter = (seed % 9) - 4;
-            return Math.round(Math.min(158, Math.max(72, average + jitter)));
+            const random = seededRandom(seed + 31);
+            const genres = summary.genres || [];
+            // The lead genre weighs most, but the others still pull.
+            let weighted = 0;
+            let weight = 0;
+            genres.forEach((genre, index) => {
+                const share = 1 / (index + 1);
+                weighted += (REMIX_STYLES[genre.name] || REMIX_NEUTRAL).bpm * share;
+                weight += share;
+            });
+            const base = weight ? weighted / weight : 120;
+            // Four tempo characters instead of a couple of beats of jitter, so a
+            // new press can be a slow song or a fast one, not a near copy.
+            const shape = random();
+            const scale = shape < 0.25 ? 0.7 : shape < 0.5 ? 0.85 : shape < 0.75 ? 1 : 1.2;
+            const jitter = Math.round((random() - 0.5) * 10);
+            return Math.round(Math.min(172, Math.max(64, base * scale + jitter)));
         }
 
         // Small deterministic generator: the same seed always rebuilds the same
@@ -1894,7 +1906,9 @@
                     : styles[(index + styleOffset) % styles.length];
                 return {
                     name: name === 'Drop' ? `${main} drop` : name,
-                    bars: SECTION_BARS[name] || 8,
+                    // Section lengths breathe with the seed too, so the form is not
+                    // the same eight-bar blocks every time.
+                    bars: Math.max(2, Math.round((SECTION_BARS[name] || 8) * (0.6 + random() * 0.9))),
                     style,
                     energy: SECTION_ENERGY[name] === undefined ? 0.8 : SECTION_ENERGY[name],
                     half: name === 'Intro' || name === 'Build' || name === 'Outro' || name === 'Bridge',
@@ -1913,35 +1927,38 @@
             return shape;
         }
 
+        // Used when no language model answers. These are images, not a description
+        // of the collection: the seed words come from the listings, the lines are
+        // about a night, a road, weather, a person.
         function libraryLyrics(summary, seed) {
-            const words = summary.words.length ? summary.words : ['signal', 'low end', 'night', 'static'];
-            // A different seed draws a different set of words from the same pool.
+            const words = (summary.words && summary.words.length)
+                ? summary.words.slice(0, 24)
+                : ['neon', 'rain', 'static', 'night', 'concrete', 'signal'];
             const offset = seed % words.length;
             const word = (index) => words[(index + offset) % words.length];
             const line = (text) => text.charAt(0).toUpperCase() + text.slice(1);
-            const total = summary.total ? summary.total.toLocaleString() : 'every';
             return [
                 { section: 'Chorus', lines: [
-                    line(`${word(0)} in the low end, ${word(1)} in the light`),
-                    'Everything we gathered is coming back tonight',
-                    line(`Keep the ${word(2)} moving, let the ${word(3)} decide`),
-                    'Every track we ever found is singing in the wide',
+                    line(`${word(0)} in the rain, ${word(1)} on the wire`),
+                    'I keep the same road turning in my hands',
+                    line(`Say the ${word(2)} again, louder than the engine`),
+                    'Nothing in my pockets but the night',
                 ] },
                 { section: 'Verse 1', lines: [
-                    line(`${word(4)} on the first bar, ${word(5)} on the last`),
-                    'Half the library in the room and half of it in the past',
-                    line(`We counted ${total} of them before we began`),
-                    'Now they all come through the speakers as a single plan',
+                    line(`${word(4)} on the window, ${word(5)} in the hall`),
+                    'You left the door half open and the lights on',
+                    line(`I wore the ${word(6)} jacket till the seams gave out`),
+                    'Counting cracks in the ceiling until the morning came',
                 ] },
                 { section: 'Verse 2', lines: [
-                    line(`${word(6)} in the verses, ${word(7)} in the drums`),
-                    'Nothing here is sampled, it is everything it becomes',
-                    line(`Build it from the ${word(8)}, hold it on the ${word(9)}`),
-                    'One song out of all of them, and none of them undone',
+                    line(`${word(8)} in the mirror, ${word(9)} in my teeth`),
+                    'The city keeps its promises in ways I cannot read',
+                    line(`Every ${word(10)} sounds like something that I lost`),
+                    'I am learning how to carry what I need',
                 ] },
                 { section: 'Bridge', lines: [
                     'Strip it back until the room tone is the only sound',
-                    'Count the tracks that brought us here, then let them go',
+                    'Hold the quiet, then step out into the cold',
                 ] },
             ];
         }
@@ -1951,7 +1968,11 @@
         // the built-in verses, so a plain static copy still has lyrics.
         async function aiLyrics(summary, seed) {
             const genre = (summary.genres && summary.genres[0] && summary.genres[0].name) || 'electronic music';
-            const subject = (summary.words || []).slice(0, 10).join(', ') || 'the library';
+            // Material gathered from the listings themselves: words and two-word
+            // phrases from their titles and descriptions. The model writes from
+            // this, it is not allowed to write about it.
+            const corpus = lyricCorpus(36);
+            const subject = corpus.length ? corpus.join(', ') : 'rain, machines, distance, night';
             const bases = [''];
             if (/^(127\.0\.0\.1|localhost)$/.test(location.hostname)) {
                 bases.push('http://127.0.0.1:8090');
@@ -1964,7 +1985,7 @@
                     response = await fetchBounded(base + '/api/lyrics', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ genre, subject, seed }),
+                        body: JSON.stringify({ genre, subject, corpus, seed }),
                     }, 8000);
                 } catch (err) {
                     continue;
@@ -1978,6 +1999,36 @@
                 if (lines.length >= 8) return lines;
             }
             return null;
+        }
+
+        // Collects imagery from the videos: single words and adjacent pairs from
+        // titles and descriptions, minus the words every listing has.
+        const LYRIC_STOP = new Set(['youtube', 'video', 'videos', 'official', 'channel', 'subscribe',
+            'playlist', 'album', 'ep', 'full', 'new', 'best', 'top', 'song', 'songs', 'mix', 'mixes',
+            'music', 'audio', 'hd', 'hq', 'live', 'feat', 'ft', 'prod', 'remix', 'version', 'edit',
+            'clip', 'release', 'records', 'label', 'free', 'download', 'watch', 'share', 'like']);
+
+        function lyricCorpus(limit) {
+            const results = window._lastResults || [];
+            const phrases = [];
+            const seen = new Set();
+            const add = (phrase) => {
+                const key = phrase.toLowerCase();
+                if (seen.has(key) || phrases.length >= (limit || 36)) return;
+                seen.add(key);
+                phrases.push(phrase);
+            };
+            results.forEach(result => {
+                const text = `${result.title || ''} ${result.description || ''}`
+                    .toLowerCase()
+                    .replace(/[^a-z0-9' ]+/g, ' ');
+                const words = text.split(/\s+/).filter(word => word.length > 3 && !LYRIC_STOP.has(word) && !REMIX_NOISE.has(word));
+                words.forEach((word, index) => {
+                    if (index + 1 < words.length) add(`${word} ${words[index + 1]}`);
+                    add(word);
+                });
+            });
+            return phrases.slice(0, limit || 36);
         }
 
         function applyAILyrics(lyrics, lines) {

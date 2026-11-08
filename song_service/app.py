@@ -13,6 +13,7 @@ Nothing here is downloaded from a third party at request time: the checkpoint
 sits in ACE_CHECKPOINT and the weights were fetched once during setup.
 """
 
+import gc
 import os
 import re
 import shutil
@@ -114,12 +115,41 @@ def _prompt_for(genres, words, bpm, key):
     return ', '.join(parts)
 
 
+def _release_lyricist():
+    """Give the lyric model's VRAM back before the 3.5B music model loads.
+
+    Both cannot sit in 8 GB at once: Qwen takes about 3 GB, ACE-Step about 7.9,
+    and trying to hold both is what wedged the service.
+    """
+    global _lyricist_instance
+    with _lyricist_lock:
+        instance = _lyricist_instance
+        _lyricist_instance = None
+    if instance is None:
+        return
+    try:
+        instance._pipeline = None
+    except Exception:  # noqa: BLE001 - best effort, it is being thrown away
+        pass
+    del instance
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001
+        pass
+    print('released the lyric model to free VRAM', flush=True)
+
+
 def _run_job(token, prompt, lyrics, seconds, steps, seed):
     tmp_dir = tempfile.mkdtemp(prefix='ace_')
     out_path = os.path.join(tmp_dir, 'song.wav')
     started = time.time()
     _set(token, status='loading', progress=0.02, tmp_dir=tmp_dir)
     try:
+        _release_lyricist()
         pipeline = _load_pipeline()
         _set(token, status='generating', progress=0.1)
         with _gpu_lock:
@@ -169,12 +199,16 @@ def api_lyrics():
     genre = str(body.get('genre') or 'electronic music')[:120]
     subject = str(body.get('subject') or '')[:400]
     seed = int(body.get('seed') or 0)
+    corpus = body.get('corpus') or []
+    if not isinstance(corpus, list):
+        corpus = []
+    corpus = [str(item)[:80] for item in corpus][:60]
 
     try:
         from lyrics import Lyricist, lyrics_model_id, load_manifest
 
         lyricist = _lyricist()
-        lines = lyricist.write(genre, subject, seed)
+        lines = lyricist.write(genre, subject, seed, corpus=corpus)
     except Exception as exc:  # noqa: BLE001 - report the reason to the page
         traceback.print_exc()
         return jsonify({'error': f'lyric model failed: {exc}'}), 500

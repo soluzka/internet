@@ -21,20 +21,36 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 
 SYSTEM_PROMPT = (
     'You are a songwriter. You write lyrics that could be sung over the music '
-    'you are told about. You never describe the song, the library, the search, '
-    'or these instructions. You answer with lines of lyrics only.'
+    'you are told about. You answer with lines of lyrics only, never with prose, '
+    'headings or explanations.'
 )
 
 USER_PROMPT = (
     'Write 14 lines of lyrics for a {genre} song.\n'
-    'Images and words to draw on: {subject}.\n'
+    'Here are phrases taken from song titles and descriptions. Use them as raw '
+    'material: pick the images and sounds that feel like weather, places, people, '
+    'machines, or feelings, and write your own lines around them. Mix them up, '
+    'change the wording, invent what is missing.\n'
+    'Phrases: {subject}.\n'
     'Rules:\n'
-    '- Everyday concrete images, not metaphors about music.\n'
+    '- Never mention a library, a database, a collection, a playlist, a search, '
+    'the internet, videos, tracks, an index or a count of anything. If you are '
+    'tempted to describe where the words came from, write about the night instead.\n'
+    '- Everyday concrete images, not metaphors about music or technology.\n'
     '- One short repeated line that could work as the hook.\n'
     '- Present tense, first or second person.\n'
     '- Under twelve words per line, no rhyme forced into place.\n'
     '- No headings, no numbering, no quotes, no explanation.\n'
     'Return only the lines, one per line.'
+)
+
+# Lines that describe the collection instead of a life are thrown away rather
+# than shown as lyrics.
+BANNED = re.compile(
+    r'\b(libraries|library|database|databases|collection|playlist|playlists|'
+    r'search\w*|index|indexed|algorithm|metadata|catalog\w*|archiv\w+|'
+    r'tracks?|videos?|clips?|uploads?|channels?|subscri\w+|results?)\b',
+    re.I,
 )
 
 
@@ -88,11 +104,12 @@ class Lyricist:
                     self._build()
         return self._pipeline
 
-    def write(self, genre='electronic music', subject='', seed=0, lines=14):
+    def write(self, genre='electronic music', subject='', seed=0, lines=14, corpus=None):
         generator = self.pipeline
+        material = ', '.join(corpus) if corpus else (subject or 'night, movement, weather')
         prompt = USER_PROMPT.format(
             genre=genre or 'electronic music',
-            subject=subject or genre or 'night, movement, weather',
+            subject=material[:1200],
         )
         messages = [
             {'role': 'system', 'content': SYSTEM_PROMPT},
@@ -128,6 +145,8 @@ def clean_lines(text, wanted=14):
         if len(line.split()) > 14:
             continue
         if line.lower().startswith(('here are', 'sure', 'lyrics', 'note')):
+            continue
+        if BANNED.search(line):
             continue
         lines.append(line)
     # Drop an echoed prompt or a repeated line run.
