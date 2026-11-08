@@ -21,6 +21,7 @@ backups/
 *.db
 *.sqlite3
 *.log
+*.err
 # The backend's video index ships with the repo
 !data/video_index.db
 
@@ -35,7 +36,7 @@ song_service/logs/
 .freebuff/
 
 # The tunnel binary is a 55 MB download, not source
- tools/bin/*.exe
+tools/bin/*.exe
 
 # Environment secrets
 .env
