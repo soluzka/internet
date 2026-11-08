@@ -3,33 +3,41 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Video Search Engine</title>
+    <title>AI-driven NVIDIA Song Designer · Video Discovery</title>
     <link rel="icon" href="/favicon.ico" type="image/x-icon">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         :root {
-            --bg: #0a0a0f;
-            --surface: #13131a;
-            --surface2: #1a1a24;
-            --border: #2a2a3a;
-            --text: #e0e0e8;
-            --text-dim: #8888a0;
-            --accent: #6c5ce7;
-            --accent2: #00cec9;
-            --danger: #e74c3c;
-            --success: #00b894;
-            --warning: #fdcb6e;
+            --bg: #07090a;
+            --surface: #0e1213;
+            --surface2: #141a1b;
+            --border: #22302c;
+            --text: #eef2ee;
+            --text-dim: #8ba39b;
+            --accent: #76b900;
+            --accent2: #35e0c8;
+            --danger: #ff5b4a;
+            --success: #76b900;
+            --warning: #ffcf6b;
+            --glow: 0 0 0 1px rgba(118, 185, 0, 0.25), 0 18px 40px -22px rgba(53, 224, 200, 0.5);
         }
         body {
-            font-family: 'Segoe UI', -apple-system, sans-serif;
-            background: var(--bg);
+            font-family: 'Inter', 'Segoe UI', -apple-system, sans-serif;
             color: var(--text);
             min-height: 100vh;
+            background:
+                radial-gradient(1100px 520px at 12% -12%, rgba(118, 185, 0, 0.16), transparent 62%),
+                radial-gradient(900px 480px at 88% 4%, rgba(53, 224, 200, 0.13), transparent 60%),
+                var(--bg);
+            background-attachment: fixed;
+            letter-spacing: 0.01em;
         }
+        ::selection { background: rgba(118, 185, 0, 0.3); }
 
         /* Header */
         .header {
-            background: linear-gradient(135deg, var(--surface) 0%, var(--surface2) 100%);
+            background: linear-gradient(135deg, rgba(14, 18, 19, 0.92), rgba(20, 26, 27, 0.92));
+            backdrop-filter: blur(14px);
             border-bottom: 1px solid var(--border);
             padding: 16px 24px;
             display: flex;
@@ -57,7 +65,21 @@
             justify-content: center;
             font-size: 20px;
         }
-        .logo-text { background: linear-gradient(90deg, var(--accent), var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .logo-text {
+            background: linear-gradient(90deg, var(--accent), var(--accent2));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: -0.01em;
+        }
+        .logo-tag {
+            font-size: 11px;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: var(--text-dim);
+            border-left: 1px solid var(--border);
+            padding-left: 14px;
+            margin-left: 2px;
+        }
         .header-stats {
             margin-left: auto;
             display: flex;
@@ -710,7 +732,8 @@
     <div class="header">
         <div class="logo">
             <div class="logo-icon">AI</div>
-            <span class="logo-text">Video Search Engine</span>
+            <span class="logo-text">NVIDIA Song Designer</span>
+            <span class="logo-tag">Video discovery</span>
         </div>
         <div class="header-stats" id="headerStats" title="Totals for the whole indexed library, not for the current search">
             <div class="stat-item">Library videos: <span class="stat-value" id="statVideos">0</span></div>
@@ -718,7 +741,7 @@
             <div class="stat-item">Clicks recorded: <span class="stat-value" id="statClicks">0</span></div>
         </div>
         <button class="library-song-btn" id="librarySongBtn" onclick="startLibrarySong()"
-                title="Compose one song from every track in the library">Library song</button>
+                title="Design one song from the tracks you found">Song designer</button>
         <div class="conn-chip" id="connChip" data-state="connecting"
              title="Checking the connection to the search server">
             <span class="conn-dot"></span>
@@ -728,8 +751,8 @@
 
     <!-- Search Section -->
     <div class="search-section">
-        <h1 class="search-title">AI-Powered Video Discovery</h1>
-        <p class="search-subtitle">Search, discover, and download videos with machine learning</p>
+        <h1 class="search-title">AI-driven NVIDIA song designer</h1>
+        <p class="search-subtitle">Video discovery, plus a song built from whatever you find</p>
         <div class="search-bar">
             <button class="voice-btn" id="voiceBtn" title="Voice search" onclick="toggleVoice()">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -748,8 +771,8 @@
     <div class="results-container" id="resultsContainer">
         <div class="empty-state" id="emptyState">
             <div class="empty-icon">AI</div>
-            <div class="empty-title">Ready to Search</div>
-            <div class="empty-desc">Type a query or click the microphone to search with your voice</div>
+            <div class="empty-title">Ready to discover</div>
+            <div class="empty-desc">Search the library, then design a song from what you find</div>
         </div>
     </div>
 
@@ -1571,7 +1594,7 @@
             src.stop(time + 0.08);
         }
 
-        function voiceSnare(ctx, dest, noise, time) {
+        function voiceSnare(ctx, dest, noise, time, level) {
             const src = ctx.createBufferSource();
             src.buffer = noise;
             const filter = ctx.createBiquadFilter();
@@ -1579,11 +1602,54 @@
             filter.frequency.value = 1900;
             filter.Q.value = 0.9;
             const gain = ctx.createGain();
-            gain.gain.setValueAtTime(0.5, time);
+            const peak = level === undefined ? 0.5 : level;
+            gain.gain.setValueAtTime(peak, time);
             gain.gain.exponentialRampToValueAtTime(0.001, time + 0.18);
             src.connect(filter).connect(gain).connect(dest);
             src.start(time);
             src.stop(time + 0.2);
+        }
+
+        function voiceClap(ctx, dest, noise, time) {
+            const src = ctx.createBufferSource();
+            src.buffer = noise;
+            const filter = ctx.createBiquadFilter();
+            filter.type = 'bandpass';
+            filter.frequency.value = 1400;
+            filter.Q.value = 1.6;
+            const gain = ctx.createGain();
+            gain.gain.setValueAtTime(0.34, time);
+            gain.gain.exponentialRampToValueAtTime(0.001, time + 0.12);
+            src.connect(filter).connect(gain).connect(dest);
+            src.start(time);
+            src.stop(time + 0.14);
+        }
+
+        function voiceOpenHat(ctx, dest, noise, time, level) {
+            const src = ctx.createBufferSource();
+            src.buffer = noise;
+            const filter = ctx.createBiquadFilter();
+            filter.type = 'highpass';
+            filter.frequency.value = 6500;
+            const gain = ctx.createGain();
+            gain.gain.setValueAtTime(level, time);
+            gain.gain.exponentialRampToValueAtTime(0.001, time + 0.26);
+            src.connect(filter).connect(gain).connect(dest);
+            src.start(time);
+            src.stop(time + 0.3);
+        }
+
+        // A soft-clipping curve whose amount sets how hard the band is pushed:
+        // a little for pop, a lot for industrial.
+        function distortionCurve(amount) {
+            const size = 1024;
+            const curve = new Float32Array(size);
+            const k = 1 + amount * 22;
+            for (let i = 0; i < size; i++) {
+                const x = (i / (size - 1)) * 2 - 1;
+                curve[i] = Math.tanh(x * k) / Math.tanh(k);
+            }
+            return curve;
         }
 
         function voiceBass(ctx, dest, time, freq, dur) {
@@ -1777,26 +1843,74 @@
             return Math.round(Math.min(158, Math.max(72, average + jitter)));
         }
 
+        // Small deterministic generator: the same seed always rebuilds the same
+        // song, and different seeds really do change it.
+        function seededRandom(seed) {
+            let state = (seed >>> 0) || 1;
+            return function () {
+                state = (state + 0x6D2B79F5) >>> 0;
+                let t = state;
+                t = Math.imul(t ^ (t >>> 15), t | 1);
+                t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+                return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+            };
+        }
+
+        // Four-bar chord movements, in scale degrees. Picking one per song is a
+        // large part of why two songs stop sounding like the same track.
+        const PROGRESSIONS = [
+            [0, 0, 5, 3], [0, 5, 3, 4], [0, 3, 5, 3], [0, 4, 5, 3],
+            [0, 5, 4, 3], [0, 3, 4, 5], [0, 7, 5, 3], [0, 2, 5, 3],
+        ];
+
+        const SECTION_ENERGY = { Intro: 0.3, Build: 0.7, Drop: 1, Verse: 0.82, Chorus: 1, Bridge: 0.55, Break: 0.4, Outro: 0.35 };
+        const SECTION_BARS = { Intro: 4, Build: 8, Drop: 16, Verse: 8, Chorus: 16, Bridge: 8, Break: 4, Outro: 4 };
+
         function librarySections(summary, seed) {
             const top = summary.genres.map(genre => genre.name);
-            // Which scene leads, and the order of the middle sections, changes
-            // with the seed, so two songs from the same library differ.
             const rotate = seed % Math.max(1, top.length);
             const order = top.slice(rotate).concat(top.slice(0, rotate));
             const main = order[0] || 'techno';
             const second = order[1] || main;
             const third = order[2] || main;
-            const swap = seed % 2 === 0;
-            return [
-                { name: 'Intro', bars: 4, style: main, energy: 0.3, half: true },
-                { name: 'Build', bars: 8, style: main, energy: 0.7, half: true },
-                { name: `${main} drop`, bars: 16, style: main, energy: 1, half: true },
-                { name: 'Verse', bars: 8, style: swap ? third : second, energy: 0.8 + (seed % 2) * 0.1, half: false },
-                { name: 'Chorus', bars: 16, style: second, energy: 1, half: false },
-                { name: 'Bridge', bars: swap ? 12 : 8, style: third, energy: 0.55, half: true },
-                { name: 'Final chorus', bars: 16, style: main, energy: 1, half: false },
-                { name: 'Outro', bars: 4, style: main, energy: 0.35, half: true },
+
+            // Different arrangements, not one shape with different sounds. The
+            // seed picks the form; the genre decides who plays each part.
+            const templates = [
+                ['Intro', 'Build', 'Drop', 'Verse', 'Chorus', 'Bridge', 'Chorus', 'Outro'],
+                ['Intro', 'Verse', 'Chorus', 'Verse', 'Chorus', 'Break', 'Chorus', 'Outro'],
+                ['Intro', 'Drop', 'Verse', 'Chorus', 'Bridge', 'Chorus', 'Outro'],
+                ['Intro', 'Build', 'Verse', 'Chorus', 'Verse', 'Bridge', 'Chorus', 'Outro'],
+                ['Intro', 'Verse', 'Build', 'Drop', 'Break', 'Chorus', 'Outro'],
             ];
+            const random = seededRandom(seed + 7);
+            const template = templates[Math.floor(random() * templates.length)];
+            const styles = [main, second, third, main];
+            const styleOffset = Math.floor(random() * 3);
+
+            const shape = template.map((name, index) => {
+                const style = name === 'Intro' || name === 'Outro'
+                    ? main
+                    : styles[(index + styleOffset) % styles.length];
+                return {
+                    name: name === 'Drop' ? `${main} drop` : name,
+                    bars: SECTION_BARS[name] || 8,
+                    style,
+                    energy: SECTION_ENERGY[name] === undefined ? 0.8 : SECTION_ENERGY[name],
+                    half: name === 'Intro' || name === 'Build' || name === 'Outro' || name === 'Bridge',
+                };
+            });
+
+            // A 170-second arrangement with sampled instruments and a convolver
+            // took minutes to render in the page. 40 bars keeps the song long
+            // enough to have sections and short enough to finish.
+            const total = shape.reduce((sum, part) => sum + part.bars, 0);
+            const cap = 40;
+            if (total > cap) {
+                const ratio = cap / total;
+                shape.forEach(part => { part.bars = Math.max(2, Math.round(part.bars * ratio)); });
+            }
+            return shape;
         }
 
         function libraryLyrics(summary, seed) {
@@ -1847,11 +1961,11 @@
             for (const base of bases) {
                 let response;
                 try {
-                    response = await fetch(base + '/api/lyrics', {
+                    response = await fetchBounded(base + '/api/lyrics', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ genre, subject, seed }),
-                    });
+                    }, 8000);
                 } catch (err) {
                     continue;
                 }
@@ -1963,53 +2077,68 @@
             acoustic_guitar_steel: { A2: 45, E3: 52 },
         };
 
-        // What each kind of music is made of. The searched genre picks the
-        // instruments and the groove, so a rock search does not come back as
-        // piano, and a techno search does not come back as rock.
-        const GENRE_PALETTES = {
-            'rock / metal': { comp: 'distortion_guitar', lead: 'overdriven_guitar', bass: 'electric_bass_pick', pad: null, pattern: 'rock' },
-            'hip hop / rap': { comp: 'electric_piano_1', lead: 'acoustic_grand_piano', bass: 'electric_bass_finger', pad: null, pattern: 'boombap' },
-            'reggae / dancehall': { comp: 'acoustic_guitar_steel', lead: 'acoustic_grand_piano', bass: 'electric_bass_finger', pad: null, pattern: 'skank' },
-            'techno': { comp: 'pad_3_polysynth', lead: 'lead_2_sawtooth', bass: 'electric_bass_finger', pad: 'string_ensemble_1', pattern: 'four' },
-            'house': { comp: 'electric_piano_1', lead: 'lead_2_sawtooth', bass: 'electric_bass_finger', pad: 'string_ensemble_1', pattern: 'four' },
-            'trance': { comp: 'pad_3_polysynth', lead: 'lead_2_sawtooth', bass: 'electric_bass_finger', pad: 'string_ensemble_1', pattern: 'four' },
-            'drum and bass': { comp: 'pad_3_polysynth', lead: 'lead_2_sawtooth', bass: 'electric_bass_pick', pad: null, pattern: 'breaks' },
-            'dubstep': { comp: 'pad_3_polysynth', lead: 'lead_2_sawtooth', bass: 'electric_bass_pick', pad: null, pattern: 'halftime' },
-            'dub': { comp: 'acoustic_guitar_steel', lead: 'electric_piano_1', bass: 'electric_bass_finger', pad: 'string_ensemble_1', pattern: 'skank' },
-            'trap': { comp: 'electric_piano_1', lead: 'lead_2_sawtooth', bass: 'electric_bass_finger', pad: null, pattern: 'halftime' },
-            'jazz': { comp: 'electric_piano_1', lead: 'acoustic_grand_piano', bass: 'electric_bass_finger', pad: null, pattern: 'boombap' },
-            'classical': { comp: 'acoustic_grand_piano', lead: 'string_ensemble_1', bass: 'string_ensemble_1', pad: 'string_ensemble_1', pattern: 'none' },
-            'pop': { comp: 'acoustic_grand_piano', lead: 'acoustic_grand_piano', bass: 'electric_bass_finger', pad: 'string_ensemble_1', pattern: 'rock' },
-            default: { comp: 'acoustic_grand_piano', lead: 'acoustic_grand_piano', bass: 'electric_bass_finger', pad: 'string_ensemble_1', pattern: 'rock' },
+        // Kick, snare, ghost notes, claps and open hats per groove, in sixteenths.
+        // Several grooves per family, so two songs in the same genre do not get
+        // the same beat.
+        const GROOVES = {
+            rock: { kick: [0, 6, 8, 14], snare: [4, 12], hat: 2 },
+            punk: { kick: [0, 4, 8, 12], snare: [4, 12], hat: 1 },
+            stomp: { kick: [0, 6, 8], snare: [4, 12], hat: 4, clap: [12] },
+            industrial: { kick: [0, 3, 8, 11], snare: [4, 12], hat: 4, clap: [4, 12], ghost: [6, 14] },
+            metal: { kick: [0, 2, 4, 6, 8, 10, 12, 14], snare: [4, 12], hat: 1, crash: [0] },
+            four: { kick: [0, 4, 8, 12], snare: [4, 12], hat: 2 },
+            fourOffbeat: { kick: [0, 4, 8, 12], snare: [4, 12], hat: 1, open: [2, 6, 10, 14] },
+            techno: { kick: [0, 2, 4, 6, 8, 10, 12, 14], snare: [8], hat: 4, open: [6] },
+            boombap: { kick: [0, 6, 10], snare: [4, 12], hat: 2, ghost: [14] },
+            halftime: { kick: [0, 10], snare: [8], hat: 4 },
+            drill: { kick: [0, 3, 6, 10], snare: [8], hat: 4, ghost: [11] },
+            phonk: { kick: [0, 6, 10], snare: [4, 12], hat: 2, ghost: [7] },
+            breaks: { kick: [0, 3, 8, 10], snare: [4, 12], hat: 2 },
+            amen: { kick: [0, 3, 7, 10], snare: [4, 9, 12], hat: 2, ghost: [14] },
+            twostep: { kick: [0, 10], snare: [4, 12], hat: 2 },
+            skank: { kick: [0, 8], snare: [4, 12], hat: 4 },
+            onedrop: { kick: [8], snare: [4, 12], hat: 4 },
+            swing: { kick: [0, 6, 10], snare: [4, 12], hat: 2, ghost: [9] },
+            funk: { kick: [0, 6, 10, 14], snare: [4, 12], hat: 2, ghost: [3, 7, 11] },
+            disco: { kick: [0, 4, 8, 12], snare: [4, 12], hat: 1, open: [2, 6, 10, 14] },
+            tumbao: { kick: [0, 6, 12], snare: [4], hat: 4, ghost: [10] },
+            afrobeat: { kick: [0, 4, 8, 12], snare: [4, 12], hat: 2, ghost: [6, 14] },
+            garage: { kick: [0, 6, 10], snare: [4, 12], hat: 3, ghost: [15] },
+            ambient: { kick: [0], snare: [], hat: 0 },
+            none: { kick: [], snare: [], hat: 0 },
         };
+
+        // A genre family: which band plays it, which grooves it can use, and how
+        // much dirt, room and echo the mix gets. Anything not matched still gets
+        // a pooled default, so a search for an obscure genre is not a piano loop.
+        const GENRE_FAMILIES = [
+            { match: /industrial|noise|ebm|power electronics/, band: { comp: 'distortion_guitar', lead: 'lead_2_sawtooth', bass: 'electric_bass_pick', pad: 'pad_3_polysynth' }, grooves: ['industrial', 'stomp', 'metal'], fx: { drive: 0.75, reverb: 0.34, delay: 0.14 } },
+            { match: /metal|grind|djent|hardcore|punk|grunge|emo|screamo/, band: { comp: 'distortion_guitar', lead: 'overdriven_guitar', bass: 'electric_bass_pick', pad: null }, grooves: ['metal', 'punk', 'rock'], fx: { drive: 0.6, reverb: 0.14, delay: 0.08 } },
+            { match: /rock|indie|alternative|shoegaze|garage rock/, band: { comp: 'distortion_guitar', lead: 'overdriven_guitar', bass: 'electric_bass_pick', pad: null }, grooves: ['rock', 'stomp', 'halftime'], fx: { drive: 0.4, reverb: 0.2, delay: 0.1 } },
+            { match: /techno|trance|edm|rave|electro|hardstyle/, band: { comp: 'pad_3_polysynth', lead: 'lead_2_sawtooth', bass: 'electric_bass_finger', pad: 'string_ensemble_1' }, grooves: ['four', 'techno', 'fourOffbeat'], fx: { drive: 0.25, reverb: 0.24, delay: 0.18 } },
+            { match: /house|disco|garage house|deep house/, band: { comp: 'electric_piano_1', lead: 'lead_2_sawtooth', bass: 'electric_bass_finger', pad: 'string_ensemble_1' }, grooves: ['fourOffbeat', 'disco', 'four'], fx: { drive: 0.18, reverb: 0.22, delay: 0.16 } },
+            { match: /hip hop|rap|grime|drill|phonk|trap/, band: { comp: 'electric_piano_1', lead: 'acoustic_grand_piano', bass: 'electric_bass_finger', pad: null }, grooves: ['boombap', 'drill', 'phonk', 'halftime'], fx: { drive: 0.2, reverb: 0.16, delay: 0.12 } },
+            { match: /drum and bass|jungle|breakcore|breakbeat/, band: { comp: 'pad_3_polysynth', lead: 'lead_2_sawtooth', bass: 'electric_bass_pick', pad: null }, grooves: ['breaks', 'amen', 'twostep'], fx: { drive: 0.3, reverb: 0.2, delay: 0.16 } },
+            { match: /dubstep|bass|riddim|garage/, band: { comp: 'pad_3_polysynth', lead: 'lead_2_sawtooth', bass: 'electric_bass_pick', pad: null }, grooves: ['halftime', 'twostep', 'garage'], fx: { drive: 0.45, reverb: 0.3, delay: 0.2 } },
+            { match: /reggae|dancehall|dub|ska|rocksteady/, band: { comp: 'acoustic_guitar_steel', lead: 'electric_piano_1', bass: 'electric_bass_finger', pad: 'string_ensemble_1' }, grooves: ['skank', 'onedrop'], fx: { drive: 0.12, reverb: 0.3, delay: 0.22 } },
+            { match: /jazz|soul|blues|swing|bebop/, band: { comp: 'electric_piano_1', lead: 'acoustic_grand_piano', bass: 'electric_bass_finger', pad: null }, grooves: ['swing', 'boombap'], fx: { drive: 0.08, reverb: 0.2, delay: 0.1 } },
+            { match: /funk|motown|groove/, band: { comp: 'electric_piano_1', lead: 'acoustic_guitar_steel', bass: 'electric_bass_pick', pad: null }, grooves: ['funk', 'disco'], fx: { drive: 0.15, reverb: 0.16, delay: 0.12 } },
+            { match: /latin|salsa|cumbia|afrobeat|afro|tropical/, band: { comp: 'acoustic_guitar_steel', lead: 'acoustic_grand_piano', bass: 'electric_bass_finger', pad: null }, grooves: ['tumbao', 'afrobeat'], fx: { drive: 0.1, reverb: 0.22, delay: 0.12 } },
+            { match: /lo.?fi|chill|study|bedroom/, band: { comp: 'electric_piano_1', lead: 'acoustic_grand_piano', bass: 'electric_bass_finger', pad: 'string_ensemble_1' }, grooves: ['boombap', 'swing'], fx: { drive: 0.3, reverb: 0.3, delay: 0.14, crush: 0.35 } },
+            { match: /synthwave|retro|vaporwave|outrun/, band: { comp: 'pad_3_polysynth', lead: 'lead_2_sawtooth', bass: 'electric_bass_finger', pad: 'string_ensemble_1' }, grooves: ['four', 'fourOffbeat', 'stomp'], fx: { drive: 0.35, reverb: 0.34, delay: 0.2 } },
+            { match: /ambient|classical|orchestra|piano|drone|cinematic/, band: { comp: 'acoustic_grand_piano', lead: 'string_ensemble_1', bass: 'string_ensemble_1', pad: 'string_ensemble_1' }, grooves: ['none', 'ambient'], fx: { drive: 0.05, reverb: 0.4, delay: 0.1 } },
+            { match: /country|folk|acoustic|singer/, band: { comp: 'acoustic_guitar_steel', lead: 'acoustic_grand_piano', bass: 'electric_bass_finger', pad: null }, grooves: ['rock', 'swing'], fx: { drive: 0.1, reverb: 0.2, delay: 0.08 } },
+            { match: /pop|top|hits|mainstream/, band: { comp: 'acoustic_grand_piano', lead: 'acoustic_grand_piano', bass: 'electric_bass_finger', pad: 'string_ensemble_1' }, grooves: ['rock', 'four', 'boombap'], fx: { drive: 0.15, reverb: 0.2, delay: 0.12 } },
+            { match: /.*/, band: { comp: 'acoustic_grand_piano', lead: 'overdriven_guitar', bass: 'electric_bass_finger', pad: 'string_ensemble_1' }, grooves: ['rock', 'four', 'boombap', 'skank', 'halftime', 'breaks'], fx: { drive: 0.2, reverb: 0.22, delay: 0.14 } },
+        ];
 
         function paletteFor(name) {
             const key = String(name || '').toLowerCase().trim();
-            if (GENRE_PALETTES[key]) return GENRE_PALETTES[key];
-            for (const genre in GENRE_PALETTES) {
-                if (genre !== 'default' && key && (key.indexOf(genre) !== -1 || genre.indexOf(key) !== -1)) {
-                    return GENRE_PALETTES[genre];
-                }
+            for (const family of GENRE_FAMILIES) {
+                if (family.match.test(key)) return family;
             }
-            if (/rock|metal|punk|grunge|hardcore/.test(key)) return GENRE_PALETTES['rock / metal'];
-            if (/hip|rap|trap|drill/.test(key)) return GENRE_PALETTES['hip hop / rap'];
-            if (/reggae|dancehall|dub|ska/.test(key)) return GENRE_PALETTES['reggae / dancehall'];
-            if (/techno|house|trance|edm|electro|rave/.test(key)) return GENRE_PALETTES['techno'];
-            if (/jazz|soul|funk/.test(key)) return GENRE_PALETTES['jazz'];
-            if (/classical|orchestra|piano|ambient/.test(key)) return GENRE_PALETTES['classical'];
-            return GENRE_PALETTES.default;
+            return GENRE_FAMILIES[GENRE_FAMILIES.length - 1];
         }
-
-        // Kick, snare and hat positions per groove, in sixteenths.
-        const GROOVES = {
-            rock: { kick: [0, 6, 8, 14], snare: [4, 12], hat: 2 },
-            four: { kick: [0, 4, 8, 12], snare: [4, 12], hat: 2 },
-            boombap: { kick: [0, 6, 10], snare: [4, 12], hat: 2 },
-            skank: { kick: [0, 8], snare: [4, 12], hat: 4 },
-            halftime: { kick: [0, 10], snare: [8], hat: 4 },
-            breaks: { kick: [0, 3, 8, 10], snare: [4, 12], hat: 2 },
-            none: { kick: [], snare: [], hat: 0 },
-        };
         const sampleCache = new Map();
 
         // The FluidR3 files are mastered quiet (peaks around 0.1), so each one is
@@ -2116,6 +2245,22 @@
             const variant = seed % 3;
             const totalBars = sections.reduce((sum, section) => sum + section.bars, 0);
             const seconds = totalBars * barSeconds;
+            // The lead genre also decides how dirty, wet and wide the whole mix is.
+            const leadFamily = paletteFor(((summary.genres[0] || {}).name) || '');
+            const fx = leadFamily.fx || {};
+            // Everything below is drawn from this one stream, so a seed is a
+            // complete recipe: key, chords, bass line, lead and fills.
+            const random = seededRandom(seed + 101);
+            const transpose = Math.floor(random() * 11) - 5;
+            const progression = PROGRESSIONS[Math.floor(random() * PROGRESSIONS.length)];
+            // Per-bar bass rhythm: strong beats always, others by chance.
+            const bassHits = [];
+            for (let step = 0; step < 16; step++) {
+                bassHits.push(step % 4 === 0 || (step % 2 === 0 ? random() < 0.35 : random() < 0.12));
+            }
+            const leadMode = Math.floor(random() * 3);
+            const fills = [];
+            for (let bar = 0; bar < 64; bar++) fills.push(bar % 4 === 3 ? Math.floor(random() * 3) : -1);
 
             // One channel keeps the render quick; the master chain is what makes
             // it sit level instead of sounding like a flat loop.
@@ -2140,12 +2285,19 @@
             // delay locked to the tempo, and ducking under the kick.
             const musicBus = offline.createGain();
             musicBus.gain.value = 1;
-            musicBus.connect(master);
+            if (fx.drive) {
+                const drive = offline.createWaveShaper();
+                drive.curve = distortionCurve(fx.drive);
+                drive.oversample = '2x';
+                musicBus.connect(drive).connect(master);
+            } else {
+                musicBus.connect(master);
+            }
 
             const reverb = offline.createConvolver();
-            reverb.buffer = roomImpulse(offline, 2.4, 2.6);
+            reverb.buffer = roomImpulse(offline, 1.5, 2.6);
             const reverbReturn = offline.createGain();
-            reverbReturn.gain.value = 0.2;
+            reverbReturn.gain.value = fx.reverb === undefined ? 0.2 : fx.reverb;
             musicBus.connect(reverb).connect(reverbReturn).connect(master);
 
             const delay = offline.createDelay(2);
@@ -2156,7 +2308,7 @@
             delayTone.type = 'lowpass';
             delayTone.frequency.value = 2300;
             const delayReturn = offline.createGain();
-            delayReturn.gain.value = 0.15;
+            delayReturn.gain.value = fx.delay === undefined ? 0.15 : fx.delay;
             musicBus.connect(delay);
             delay.connect(delayTone);
             delayTone.connect(feedback).connect(delay);
@@ -2165,21 +2317,32 @@
             const noise = noiseBuffer(offline);
             // Recorded instruments, loaded once. If they fail (offline copy, no
             // samples folder) every part falls back to the oscillator voices.
-            const bank = await loadSamples(offline, ['acoustic_grand_piano', 'electric_bass_finger', 'string_ensemble_1',
-                'electric_piano_1', 'distortion_guitar', 'overdriven_guitar', 'electric_bass_pick',
-                'lead_2_sawtooth', 'pad_3_polysynth', 'acoustic_guitar_steel']);
+            // Only the instruments this arrangement will actually play: decoding
+            // all ten sets up front is most of the first render's cost.
+            const needed = new Set(['acoustic_grand_piano', 'electric_bass_finger', 'electric_piano_1']);
+            sections.forEach(section => {
+                const family = paletteFor(section.style);
+                ['comp', 'lead', 'bass', 'pad'].forEach(slot => {
+                    if (family.band[slot]) needed.add(family.band[slot]);
+                });
+            });
+            const bank = await loadSamples(offline, [...needed]);
             let barStart = 0;
 
-            sections.forEach(section => {
+            sections.forEach((section, sectionIndex) => {
                 const style = REMIX_STYLES[section.style] || REMIX_NEUTRAL;
-                // The searched genre decides the band and the groove here.
-                const palette = paletteFor(section.style);
-                const groove = GROOVES[palette.pattern] || GROOVES.rock;
-                const root = rootFromKey(style.keys[0]);
+                // The searched genre decides the band; the seed picks which of
+                // that family's grooves this section plays, so two songs in one
+                // genre do not share a beat.
+                const family = paletteFor(section.style);
+                const band = family.band;
+                const grooveName = family.grooves[(seed + sectionIndex * 3) % family.grooves.length];
+                const groove = GROOVES[grooveName] || GROOVES.rock;
+                const root = rootFromKey(style.keys[0]) * Math.pow(2, transpose / 12);
                 for (let bar = 0; bar < section.bars; bar++) {
                     const barTime = (barStart + bar) * barSeconds;
                     const stepSeconds = barSeconds / 16;
-                    const degree = [0, 0, 5, 3][bar % 4];
+                    const degree = progression[bar % progression.length];
                     for (let step = 0; step < 16; step++) {
                         const time = barTime + step * stepSeconds;
                         const kick = groove.kick.indexOf(step) !== -1;
@@ -2193,42 +2356,63 @@
                             musicBus.gain.linearRampToValueAtTime(1, time + 0.19);
                         }
                         if (snare && section.energy > 0.6) voiceSnare(offline, master, noise, time);
+                        if (groove.ghost && groove.ghost.indexOf(step) !== -1 && section.energy > 0.5) {
+                            voiceSnare(offline, master, noise, time, 0.18);
+                        }
+                        if (groove.clap && groove.clap.indexOf(step) !== -1 && section.energy > 0.6) {
+                            voiceClap(offline, master, noise, time);
+                        }
+                        if (groove.open && groove.open.indexOf(step) !== -1 && section.energy > 0.5) {
+                            voiceOpenHat(offline, master, noise, time, 0.05 + section.energy * 0.04);
+                        }
                         if (groove.hat && step % groove.hat === 0 && section.energy > 0.4) {
                             voiceHat(offline, master, noise, time, 0.05 + section.energy * 0.06);
                         }
-                        if (step % 4 === 0 && section.energy > 0.5) {
+                        if (bassHits[step] && section.energy > 0.5) {
                             const bassFreq = root * Math.pow(2, degree / 12);
-                            const bassDur = stepSeconds * 3.4;
-                            const bassVoice = bank[palette.bass] || bank.electric_bass_finger;
+                            // Legato where the next step is empty, short where it is not.
+                            const bassDur = stepSeconds * (bassHits[(step + 1) % 16] ? 1.3 : 3.4);
+                            const bassVoice = bank[band.bass] || bank.electric_bass_finger;
                             const fingered = playSample(offline, musicBus, bassVoice,
                                 midiOf(bassFreq), time, bassDur, 0.34,
-                                { attack: palette.pattern === 'rock' ? 0.004 : 0.012, lowpass: 900 });
+                                { attack: (fx.drive || 0) > 0.3 ? 0.004 : 0.012, lowpass: 900 });
                             if (!fingered) voiceBass(offline, musicBus, time, bassFreq, bassDur);
                         }
                         // A lead motif only where the arrangement can carry it.
-                        if (section.energy >= 0.8 && [0, 6, 10, 14].indexOf(step) !== -1) {
-                            const shapes = [[0, 3, 7, 5], [0, 5, 3, 10], [0, 7, 10, 3]];
-                            const shape = shapes[seed % shapes.length];
+                        // Three lead characters: running eighths, long held notes,
+                        // or a sparse call. The seed decides which one this song is.
+                        const leadSteps = leadMode === 0 ? [0, 2, 4, 6, 8, 10, 12, 14]
+                            : leadMode === 1 ? [0, 8] : [0, 6, 10, 14];
+                        if (section.energy >= 0.8 && leadSteps.indexOf(step) !== -1) {
+                            const shapes = [[0, 3, 7, 5], [0, 5, 3, 10], [0, 7, 10, 3], [0, 4, 7, 11]];
+                            const shape = shapes[Math.floor(random() * shapes.length)];
                             const motif = shape[Math.floor(step / 4) % shape.length];
                             const leadFreq = root * 4 * Math.pow(2, motif / 12);
-                            const leadVoice = bank[palette.lead] || bank.acoustic_grand_piano;
+                            const leadVoice = bank[band.lead] || bank.acoustic_grand_piano;
+                            const leadDur = leadMode === 1 ? barSeconds * 0.45 : 0.46;
                             const plucked = playSample(offline, musicBus, leadVoice,
-                                midiOf(leadFreq), time, 0.46, 0.19, { attack: 0.004, lowpass: 5200 });
-                            if (!plucked) voiceLead(offline, musicBus, time, leadFreq, 0.24);
+                                midiOf(leadFreq), time, leadDur, 0.19, { attack: 0.004, lowpass: 5200 });
+                            if (!plucked) voiceLead(offline, musicBus, time, leadFreq, leadDur * 0.55);
+                        }
+                        // A fill at the end of every fourth bar, so the sections turn over.
+                        if (bar % 4 === 3 && fills[bar % 64] !== -1 && section.energy > 0.6) {
+                            if (step === 12 + fills[bar % 64] * 2) voiceSnare(offline, master, noise, time, 0.3);
+                            if (step === 14) voiceSnare(offline, master, noise, time, 0.24);
                         }
                     }
                     // The comping instrument for this genre: power chords for rock,
                     // electric piano for hip hop, a synth pad for techno.
-                    const comp = bank[palette.comp] || bank.acoustic_grand_piano;
-                    const compOffsets = palette.pattern === 'rock' ? [0, 5] : [0, 3];
+                    const comp = bank[band.comp] || bank.acoustic_grand_piano;
+                    // Heavy families voice chords as fifths, not triads.
+                    const compOffsets = (fx.drive || 0) > 0.35 ? [0, 5] : [0, 3];
                     compOffsets.forEach((offset, index) => {
                         const chordFreq = root * 2 * Math.pow(2, (degree + offset) / 12);
                         playSample(offline, musicBus, comp, midiOf(chordFreq),
                             barTime + index * barSeconds * 0.5, barSeconds * 0.62, 0.15,
-                            { attack: 0.01, lowpass: palette.pattern === 'rock' ? 3000 : 3600 });
+                            { attack: 0.01, lowpass: (fx.drive || 0) > 0.35 ? 3000 : 3600 });
                     });
-                    if (palette.pad && bar % 2 === 0 && section.energy > 0.2) {
-                        const padVoice = bank[palette.pad] || bank.string_ensemble_1;
+                    if (band.pad && bar % 2 === 0 && section.energy > 0.2) {
+                        const padVoice = bank[band.pad] || bank.string_ensemble_1;
                         const chord = [0, 3, 7].map(d => root * 2 * Math.pow(2, d / 12));
                         const bowed = chord.every(f => playSample(offline, musicBus, padVoice,
                             midiOf(f), barTime, barSeconds * 1.9, 0.085, { attack: 0.3, lowpass: 2600 }));
@@ -2307,14 +2491,26 @@
         // or the Flask app), a local model service on 8090 when the page is on
         // this machine, then any URL configured in config.js. Each answer is
         // either finished audio (Cloudflare model) or a job to poll (local ACE).
+        // Every network step is bounded: a model that is loading or wedged must
+        // not leave the page saying "composing" forever. Abort means fall back.
+        async function fetchBounded(url, options, ms) {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), ms);
+            try {
+                return await fetch(url, Object.assign({}, options, { signal: controller.signal }));
+            } finally {
+                clearTimeout(timer);
+            }
+        }
+
         async function postSong(base, payload) {
             let response;
             try {
-                response = await fetch(base + '/api/song', {
+                response = await fetchBounded(base + '/api/song', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload),
-                });
+                }, 20000);
             } catch (err) {
                 return null;
             }
@@ -2339,6 +2535,7 @@
             if (window.SONG_API) bases.push(String(window.SONG_API).replace(/\/+$/, ''));
 
             let answer = null;
+            window._modelNote = '';
             for (const base of bases) {
                 answer = await postSong(base, payload);
                 if (answer) break;
@@ -2349,11 +2546,13 @@
 
             // A job: the local model reports progress while the GPU works.
             const token = answer.data.token;
-            for (let attempt = 0; attempt < 300; attempt++) {
+            // About a minute: long enough for a loaded model to answer, short
+            // enough that a cold or busy one does not hold the page on "composing".
+            for (let attempt = 0; attempt < 30; attempt++) {
                 await new Promise(resolve => setTimeout(resolve, 2000));
                 let job;
                 try {
-                    job = await (await fetch(answer.base + '/api/song/' + token)).json();
+                    job = await (await fetchBounded(answer.base + '/api/song/' + token, {}, 15000)).json();
                 } catch (err) {
                     continue;
                 }
@@ -2408,29 +2607,26 @@
                 // refuses the request.
                 const started = performance.now();
                 let modelError = null;
-                let model = null;
-                try {
-                    model = await requestModelSong(summary, lyrics, seed);
-                } catch (err) {
-                    modelError = err && err.message ? err.message : 'the song model is unavailable';
-                }
+                const model = null;
+                const statusLine = document.getElementById('songStatus');
+                if (statusLine) statusLine.textContent = 'Rendering the arrangement...';
 
-                let url;
-                let bpm = libraryTempo(summary, seed);
-                let seconds = null;
-                let origin;
-                if (model) {
-                    url = model.audio;
-                    origin = 'MiniMax Music 2.6 on Cloudflare';
-                } else {
-                    const result = await renderLibrarySong(summary, seed);
-                    url = URL.createObjectURL(encodeWav(result.buffer));
-                    bpm = result.bpm;
-                    seconds = result.seconds;
-                    origin = 'the browser synthesiser';
-                }
+                // The sampled band renders in about ten seconds, so it plays first.
+                // The model is asked at the same time and replaces the audio only if
+                // it answers; nothing waits on it, so the button never sits there.
+                const modelPromise = requestModelSong(summary, lyrics, seed)
+                    .catch(err => {
+                        modelError = err && err.message ? err.message : 'the song model is unavailable';
+                        return null;
+                    });
+
+                const result = await renderLibrarySong(summary, seed);
+                const url = URL.createObjectURL(encodeWav(result.buffer));
+                let bpm = result.bpm;
+                let seconds = result.seconds;
+                const origin = 'the browser synthesiser';
                 const took = ((performance.now() - started) / 1000).toFixed(1);
-                const extension = model ? '.mp3' : '.wav';
+                const extension = '.wav';
 
                 const audio = document.createElement('audio');
                 audio.controls = true;
@@ -2451,9 +2647,9 @@
                 note.textContent = (summary.genres.length
                     ? `Built from ${summary.label}, shaped by what dominates it: ${summary.genres.map(genre => `${genre.name} (${genre.count})`).join(', ')}. `
                     : `Built from ${summary.label}. `) +
-                    (model
-                        ? `Composed by ${origin} from the lyrics below; it took ${took}s and costs about $0.15 a track.`
-                        : `Rendered and mastered in ${took}s by ${origin}${modelError ? ' (model unavailable: ' + modelError + ')' : ''}.`);
+                    `Rendered and mastered in ${took}s by ${origin}.`
+                        + (window._modelNote ? ` ${window._modelNote}.` : '')
+                        + (modelError ? ` (model unavailable: ${modelError})` : '');
 
                 const list = document.createElement('div');
                 list.className = 'gen-lyrics';
@@ -2472,7 +2668,7 @@
                 actions.className = 'gen-actions';
                 const saveAudio = document.createElement('a');
                 saveAudio.className = 'gen-open';
-                saveAudio.textContent = model ? 'Save the song' : 'Save the WAV';
+                saveAudio.textContent = 'Save the WAV';
                 saveAudio.href = url;
                 saveAudio.download = 'library-song' + extension;
                 const saveLyrics = document.createElement('a');
@@ -2502,13 +2698,29 @@
                     + ` (${lyrics.reduce((count, part) => count + part.lines.length, 0)} lines)`;
 
                 panel.append(head, lyricHead, list, note, actions);
+
+                // A real model may answer while the band is already playing. When it
+                // does, the sung track replaces the audio and the labels say so.
+                modelPromise.then(swapped => {
+                    if (!swapped || !swapped.audio) return;
+                    audio.src = swapped.audio;
+                    audio.autoplay = true;
+                    head.textContent = head.textContent.replace(' · seed', ' · sung by the model · seed');
+                    note.textContent = (summary.genres.length
+                        ? `Built from ${summary.label}, shaped by what dominates it: ${summary.genres.map(genre => `${genre.name} (${genre.count})`).join(', ')}. `
+                        : `Built from ${summary.label}. `)
+                        + `Composed by ${swapped.model || 'the song model'} from the lyrics below, which it sings.`;
+                    saveAudio.textContent = 'Save the song';
+                    saveAudio.href = swapped.audio;
+                    saveAudio.download = 'library-song.mp3';
+                });
             } catch (err) {
                 panel.innerHTML = '';
                 const failure = document.createElement('div');
                 failure.textContent = 'Could not compose the song: ' + (err && err.message ? err.message : 'unknown error');
                 panel.appendChild(failure);
             } finally {
-                if (btn) { btn.disabled = false; btn.textContent = 'Library song'; }
+                if (btn) { btn.disabled = false; btn.textContent = 'Song designer'; }
             }
         }
 
