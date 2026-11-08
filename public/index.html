@@ -911,6 +911,10 @@
         // of retrying against an origin that can never answer.
         const LOCAL_APP = 'http://127.0.0.1:5001';
         const ON_LOCAL_APP = /^(127\.0\.0\.1|localhost|\[::1\])$/.test(location.hostname);
+        // Set the first time the app refuses a connection. The page then stops
+        // dialling 5001 for the rest of the session, so voice and downloads do not
+        // each print a red refused connection on every use while it is closed.
+        window.appUnavailable = false;
         let socketChecked = true;
 
         // Connect to the app on this machine the first time something needs it.
@@ -931,6 +935,7 @@
                     setTimeout(finish, 4000);
                 });
             } catch (err) {
+                window.appUnavailable = true;
                 console.log('The desktop app is not running here, searching the bundled index');
                 useHttpFallback = true;
                 setConnection('snapshot');
@@ -3405,7 +3410,7 @@
             const list = [];
             const configured = (window.DOWNLOAD_API || '').replace(/\/+$/, '');
             if (configured) list.push(configured);
-            if (!list.includes(LOCAL_APP)) list.push(LOCAL_APP);
+            if (!window.appUnavailable && !list.includes(LOCAL_APP)) list.push(LOCAL_APP);
             if (!list.includes(DOWNLOAD_SERVICE)) list.push(DOWNLOAD_SERVICE);
             return list;
         }
@@ -3462,8 +3467,9 @@
                             return data;
                         } catch (err) {
                             lastError = err;
-                            // A service that answered and refused the video is the
-                            // end of it; only an unreachable one is worth skipping.
+                            // An unreachable app is worth remembering; a service that
+                            // answered and refused the video is the end of it.
+                            if (origin === LOCAL_APP) window.appUnavailable = true;
                             if (err && err.code === 'API_ERROR') throw err;
                         }
                     }
@@ -3758,7 +3764,7 @@
                 // app is tried first because it is the faster of the two, and a
                 // closed app refuses the connection immediately.
                 const candidates = [];
-                if (window.DOWNLOAD_API) candidates.push(apiUrl('/api/transcribe'));
+                if (window.DOWNLOAD_API && !window.appUnavailable) candidates.push(apiUrl('/api/transcribe'));
                 const edge = (location.origin + '/api/transcribe');
                 if (!candidates.includes(edge)) candidates.push(edge);
 
@@ -3775,6 +3781,9 @@
                         failure = new Error('HTTP ' + attempt.status);
                     } catch (err) {
                         failure = err;
+                        // Nothing is listening on 5001: remember that, so the next
+                        // voice search goes straight to the edge.
+                        if (target.startsWith(LOCAL_APP)) window.appUnavailable = true;
                     }
                 }
                 if (!response) throw failure || new Error('no transcription service');
