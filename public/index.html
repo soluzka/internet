@@ -2048,10 +2048,11 @@
                 const saved = (localStorage.getItem('songApi') || '').trim().replace(/\/+$/, '');
                 if (saved) bases.push(saved);
             } catch (err) {}
-            bases.push('');
-            if (/^(127\.0\.0\.1|localhost)$/.test(location.hostname)) {
-                bases.push('http://127.0.0.1:8090');
-            }
+            // The Worker answers 501 here: it has no GPU. Once that is seen the
+            // page stops asking it, which is where those 501s in the console
+            // came from on every compose.
+            if (window.edgeSongModel !== false) bases.push('');
+            if (!bases.includes('http://127.0.0.1:8090')) bases.push('http://127.0.0.1:8090');
             if (window.SONG_API) bases.push(String(window.SONG_API).replace(/\/+$/, ''));
 
             for (const base of bases) {
@@ -2086,7 +2087,10 @@
                     if (ticker) clearInterval(ticker);
                 }
                 const isJson = (response.headers.get('content-type') || '').includes('application/json');
-                if (!response.ok || !isJson) continue;
+                if (!response.ok || !isJson) {
+                    if (base === '' && response.status === 501) window.edgeSongModel = false;
+                    continue;
+                }
                 const data = await response.json().catch(() => ({}));
                 const sections = Array.isArray(data.sections)
                     ? data.sections
@@ -2747,6 +2751,8 @@
             const isJson = (response.headers.get('content-type') || '').includes('application/json');
             // A plain static host, or Flask without the route, answers with HTML.
             if (!isJson) return null;
+            // 501 is the Worker saying it has no GPU: stop asking it this session.
+            if (base === '' && response.status === 501) window.edgeSongModel = false;
             const data = await response.json().catch(() => ({}));
             if (!response.ok) {
                 throw new Error(data.error || 'the song service refused the request');
@@ -2769,10 +2775,8 @@
                 const saved = (localStorage.getItem('songApi') || '').trim().replace(/\/+$/, '');
                 if (saved) bases.push(saved);
             } catch (err) {}
-            bases.push('');
-            if (/^(127\.0\.0\.1|localhost)$/.test(location.hostname)) {
-                bases.push('http://127.0.0.1:8090');
-            }
+            if (window.edgeSongModel !== false) bases.push('');
+            if (!bases.includes('http://127.0.0.1:8090')) bases.push('http://127.0.0.1:8090');
             if (window.SONG_API) bases.push(String(window.SONG_API).replace(/\/+$/, ''));
 
             let answer = null;
@@ -2783,7 +2787,9 @@
             for (const base of bases) {
                 let latest = null;
                 try {
-                    latest = await (await fetchBounded(base + '/api/song/latest', {}, 8000)).json();
+                    const probe = await fetchBounded(base + '/api/song/latest', {}, 8000);
+                    if (base === '' && probe.status === 501) window.edgeSongModel = false;
+                    latest = await probe.json();
                 } catch (err) {
                     continue;
                 }

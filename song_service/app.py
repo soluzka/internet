@@ -513,7 +513,10 @@ def api_song_latest():
     with _jobs_lock:
         job = _jobs.get(_latest_token) if _latest_token else None
         if job is None:
-            return jsonify({'error': 'No song has been requested yet'}), 404
+            # Nothing has been asked for since this process started. That is a
+            # normal state, not a missing resource: a 404 made the page's console
+            # read as if something had gone wrong.
+            return jsonify({'status': 'idle', 'token': None})
         return jsonify({
             'token': _latest_token,
             'status': job['status'],
