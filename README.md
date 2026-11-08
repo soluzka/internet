@@ -29,6 +29,29 @@ It runs two ways from one codebase:
 | `tools/register_protocol.ps1` | Registers `songsvc://` so the site's Start the AI button can launch it |
 | `start.cmd` / `start.ps1` | One click: song service, site and tunnel |
 | `data/video_index.db` | Committed snapshot of the index |
+| `build/` | Local scaffolding, almost all of it ignored; the six check scripts in it are tracked — see below |
+
+### The `build/` folder
+
+It is where PyInstaller's work folder, the portable Node with wrangler installed,
+captured logs, test audio and one-off probe scripts pile up — around 520 MB that
+is not source, so `.gitignore` excludes `build/*` rather than the folder.
+
+Six scripts are the exceptions, because they are how a change is checked after it
+is made rather than something used once:
+
+| Script | What it checks |
+| --- | --- |
+| `deploy_and_check.ps1` | Deploys, then confirms the new version serves the page |
+| `verify_live.ps1` | The live page holds this build, and the repo is clean |
+| `asset_check.ps1` | Each `public/` file is served with the right content type |
+| `service_state.ps1` | Both local services, with the GPU answer from `/health` |
+| `autostart_status.ps1` | Startup entry, `songsvc://` target, services now |
+| `race_test.ps1` | Two launcher runs leave exactly one song service |
+
+They resolve the repo root from their own location, so any of them runs from
+wherever you are. `race_test.ps1` restarts the song service; run it when nothing
+is rendering.
 
 ## Run it locally
 

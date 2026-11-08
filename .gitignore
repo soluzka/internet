@@ -10,8 +10,17 @@ env/
 # Node
 node_modules/
 
-# Build output
-build/
+# Build output. PyInstaller's work folder, the portable Node and its wrangler
+# install, one-off probes, captured logs and test audio all live here and none of
+# it is source. Six scripts are the exception because they are how a change gets
+# checked after it is made; everything else in the folder stays local.
+build/*
+!build/deploy_and_check.ps1
+!build/verify_live.ps1
+!build/asset_check.ps1
+!build/service_state.ps1
+!build/autostart_status.ps1
+!build/race_test.ps1
 dist/
 
 # Local runtime data and caches
