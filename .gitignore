@@ -34,6 +34,9 @@ song_service/logs/
 # Freebuff desktop metadata
 .freebuff/
 
+# The tunnel binary is a 55 MB download, not source
+ tools/bin/*.exe
+
 # Environment secrets
 .env
 .env.*

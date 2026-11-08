@@ -1987,7 +1987,15 @@
                 'a worker finishing a long shift',
             ];
             const angle = angles[Math.abs(seed) % angles.length];
-            const bases = [''];
+            // A model address pasted into the page is remembered in this
+            // browser, so a tunnel URL that changes on every restart never
+            // needs a new build: paste it once and keep singing.
+            const bases = [];
+            try {
+                const saved = (localStorage.getItem('songApi') || '').trim().replace(/\/+$/, '');
+                if (saved) bases.push(saved);
+            } catch (err) {}
+            bases.push('');
             if (/^(127\.0\.0\.1|localhost)$/.test(location.hostname)) {
                 bases.push('http://127.0.0.1:8090');
             }
@@ -2680,7 +2688,15 @@
             // asking for three minutes of audio made each song a coffee break.
             const payload = { prompt: modelPrompt(summary, seed), lyrics: lyricText, seconds: 45, steps: 24 };
 
-            const bases = [''];
+            // A model address pasted into the page is remembered in this
+            // browser, so a tunnel URL that changes on every restart never
+            // needs a new build: paste it once and keep singing.
+            const bases = [];
+            try {
+                const saved = (localStorage.getItem('songApi') || '').trim().replace(/\/+$/, '');
+                if (saved) bases.push(saved);
+            } catch (err) {}
+            bases.push('');
             if (/^(127\.0\.0\.1|localhost)$/.test(location.hostname)) {
                 bases.push('http://127.0.0.1:8090');
             }
@@ -2862,6 +2878,31 @@
                     startLibrarySong();
                 };
                 actions.append(saveAudio, saveLyrics, again, replay);
+
+                // Where the model lives belongs to the browser, not the build.
+                // A tunnel URL changes every time it restarts, so it is pasted
+                // here and kept in localStorage instead of config.js.
+                const connect = document.createElement('button');
+                let savedModel = '';
+                try { savedModel = localStorage.getItem('songApi') || ''; } catch (err) {}
+                connect.textContent = (savedModel || window.SONG_API)
+                    ? 'Change the model address'
+                    : 'Connect my model';
+                connect.onclick = (clickEvent) => {
+                    clickEvent.stopPropagation();
+                    const entered = window.prompt(
+                        'Paste the address of your song service (the tunnel URL), '
+                        + 'or leave it empty to use only this machine.',
+                        savedModel || window.SONG_API || '');
+                    if (entered === null) return;
+                    const clean = entered.trim().replace(/\/+$/, '');
+                    try {
+                        if (clean) localStorage.setItem('songApi', clean);
+                        else localStorage.removeItem('songApi');
+                    } catch (err) {}
+                    startLibrarySong();
+                };
+                actions.appendChild(connect);
 
                 // The words come first and are labelled, because they are the part
                 // someone wants to read while the song plays.

@@ -1,0 +1,6 @@
+# Deliberately empty apart from this comment.
+#
+# Quick Tunnels (trycloudflare.com) do not work when cloudflared picks up a
+# config.yaml from ~/.cloudflared: that file's ingress rules take over, the
+# catch-all at the end answers 404, and nothing reaches the local service.
+# Passing --config with this file keeps the quick tunnel's own --url routing.
