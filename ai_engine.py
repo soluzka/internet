@@ -18,6 +18,7 @@ import re
 import json
 import random
 import shutil
+import sys
 import asyncio
 import logging
 import tempfile
@@ -56,7 +57,18 @@ logger = logging.getLogger(__name__)
 # DATABASE SCHEMA
 # ============================================================================
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'video_index.db')
+DB_PATH = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'video_index.db'))
+
+# A one-file bundle runs from a temp folder, so on a machine that has never
+# scraped the live index would start empty. Seed it from the snapshot the build
+# ships, so a fresh EXE opens with a library instead of nothing.
+if getattr(sys, 'frozen', False) and not os.path.exists(DB_PATH):
+    _seed_db = os.path.join(getattr(sys, '_MEIPASS', os.path.dirname(DB_PATH)), 'data', 'video_index.db')
+    if os.path.exists(_seed_db):
+        try:
+            shutil.copy2(_seed_db, DB_PATH)
+        except OSError:
+            pass
 
 # Discovery writes while searches read and log. SQLite's default 5 s lock wait
 # was too short, so a busy database surfaced as "Search Error: database is
