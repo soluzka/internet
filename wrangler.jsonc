@@ -17,7 +17,12 @@
   // the source page instead. Can also be set in the dashboard (Settings ->
   // Variables) without touching this file.
   "vars": {
-    "DOWNLOAD_API": ""
+    "DOWNLOAD_API": "",
+    // Where the song model lives, so the deployed page has something to try
+    // before the visitor pastes an address into "Connect my model". A Quick
+    // Tunnel gets a new address every time it restarts, so this value goes
+    // stale: update it, or leave it empty and paste in the page instead.
+    "SONG_API": "https://arrow-bell-meters-opponents.trycloudflare.com"
   },
   "observability": {
     "enabled": true
