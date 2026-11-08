@@ -433,6 +433,20 @@ def api_lyrics():
                     'model': lyrics_model_id(load_manifest())})
 
 
+def _gpu():
+    """What the render will run on, so /health can say cuda instead of guessing."""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            props = torch.cuda.get_device_properties(0)
+            return {'device': 'cuda', 'gpu': torch.cuda.get_device_name(0),
+                    'vram_gb': round(props.total_memory / (1024 ** 3), 1)}
+    except Exception:  # noqa: BLE001
+        pass
+    return {'device': 'cpu', 'gpu': None, 'vram_gb': None}
+
+
 @app.route('/health')
 def health():
     ready = _pipeline is not None
@@ -444,6 +458,8 @@ def health():
         'loaded': ready,
         'cpu_offload': CPU_OFFLOAD,
         'dtype': DTYPE,
+        'lyrics_loaded': _lyricist_instance is not None,
+        **_gpu(),
     })
 
 
@@ -577,11 +593,32 @@ def last_song():
                      mimetype='audio/wav')
 
 
+def _warm():
+    """Put the song model on the card at startup instead of on the first song.
+
+    Everything else loading lazily keeps the service quick to answer, but the
+    first compose then pays for the load. With SONG_WARM=1 that minute is spent
+    quietly after start instead, and health reports loaded: true when it is
+    ready. Off by default, because holding 8 GB of VRAM from the moment a
+    service starts is not what every machine wants.
+    """
+    try:
+        info = _gpu()
+        print(f'warming on {info["device"]}: {info.get("gpu") or "cpu"}', flush=True)
+        _load_pipeline()
+        print('song model ready', flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f'warm load failed: {exc}', flush=True)
+
+
 if __name__ == '__main__':
     # The page looks for this service on 8090, so an empty or zero PORT from the
     # environment must not turn into a random port.
     port = int(os.environ.get('SONG_PORT') or os.environ.get('PORT') or 8090)
     if not port:
         port = 8090
-    # Loading happens on the first request so the service reports health quickly.
+    if os.environ.get('SONG_WARM', '0') not in ('0', '', 'false', 'False'):
+        threading.Thread(target=_warm, daemon=True).start()
+    # Otherwise loading happens on the first request so the service answers
+    # health immediately.
     app.run(host='127.0.0.1', port=port, threaded=True)
