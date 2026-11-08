@@ -23,6 +23,8 @@ It runs two ways from one codebase:
 | `tools/export_index.py` | Refreshes the committed index and precomputes genres |
 | `worker.js` + `wrangler.jsonc` | Cloudflare Worker: static assets, voice, download proxy |
 | `downloader_service/` | Small Flask container that runs yt-dlp for the static site |
+| `song_service/` | The local lyric and music models (GPU, 8090) |
+| `start.cmd` / `start.ps1` | One click: song service, site and tunnel |
 | `data/video_index.db` | Committed snapshot of the index |
 
 ## Run it locally
@@ -116,8 +118,54 @@ The page asks two things of `song_service/`, which runs on your own machine:
 
 The page calls the service on `127.0.0.1:8090` when it is opened from this
 machine, and falls back to the sampled band in the browser when the service is
-not running. On the deployed site only the browser band exists — the local model
-is not reachable from an `https://` page, and no tunnel is used.
+not running. On the deployed site the page reaches the same service through a
+Quick Tunnel — see below — or plays the band if nothing answers.
+
+### Start everything with one click
+
+`start.cmd` (which runs `start.ps1`) brings up the whole stack in order and
+leaves anything already running alone, so double-clicking it twice is safe:
+
+1. `song_service/app.py` on **8090** — the lyric model and ACE-Step on the GPU;
+2. `app.py` on **5001** — the site on this machine;
+3. `cloudflared` — a Quick Tunnel giving the service a public `https` address;
+4. the browser, at <http://127.0.0.1:5001>.
+
+The tunnel's address is printed and copied to the clipboard. It changes every
+time the tunnel restarts.
+
+> A config.yml in `~/.cloudflared` disables Quick Tunnels: its ingress rules win
+> over `--url` and the catch-all answers **404**, so nothing reaches the service.
+> `start.ps1` therefore runs cloudflared with `--config tools/bin/quick-tunnel.yml`,
+> an empty config that keeps the tunnel bound to port 8090. `cloudflared.exe`
+> itself is downloaded into `tools/bin/` and gitignored (55 MB).
+
+### Pointing the live site at the model
+
+The model address is a runtime setting, not a build setting, because the tunnel
+address changes on every restart:
+
+1. run `start.cmd` and copy the `https://….trycloudflare.com` address it prints;
+2. on the live site press **Song designer**, then **Connect my model**, and paste
+   it in. The song re-renders using it immediately.
+
+The address is kept in this browser under `songApi` in `localStorage`, tried
+before the same-origin route and before 8090, so the deployed page sings without
+a rebuild. Paste an empty value to forget it.
+
+To give the deployed page a default instead, set `SONG_API` on the Worker
+(Workers & Pages → the Worker → Settings → Variables and Secrets, or `vars` in
+`wrangler.jsonc`): the origin only, no trailing slash and no path. A pasted
+address still wins over it.
+
+Cross-origin calls already work: `song_service` sends
+`Access-Control-Allow-Origin` and answers the JSON preflight with 204, so the
+page's `POST /api/song` is not blocked from the Worker's origin.
+
+The honest limits: the tunnel is only up while your PC, the service and
+`cloudflared` are all running; Quick Tunnels have no uptime guarantee and are
+meant for development; and anything holding the address can render songs on your
+GPU, since `/api/song` has no authentication.
 
 ### What the deploy needs
 
@@ -132,6 +180,10 @@ Workers Builds does the same on push to `main`: it runs `bun install` (which
 installs `wrangler` from `devDependencies`) and deploys. Nothing in
 `song_service/` is uploaded — that directory is local-only and gitignored for
 models.
+
+No build step involves the model address: `SONG_API` is optional and the page
+can take one at runtime, so pointing the site at a new tunnel never needs a
+redeploy.
 
 ### ACE-Step cannot be installed on Cloudflare
 
@@ -208,6 +260,8 @@ rather than turned into a query.
 | `WHISPER_MODEL` | app | Local speech model (default `base.en`) |
 | `RENDER` | app | Set by Render; skips ML rebuilds and uses eventlet |
 | `DOWNLOAD_API` | Worker | URL of the download service |
+| `SONG_API` | Worker | Optional default origin of the song service; a pasted address in the page wins |
+| `songApi` | browser (`localStorage`) | The model address pasted into "Connect my model" |
 | `MAX_HEIGHT` | downloader | Download resolution cap (default 720) |
 | `MAX_ACTIVE_JOBS` / `MAX_JOBS_PER_IP` | downloader | Concurrency limits |
 | `YT_COOKIES_FILE` | downloader | Optional yt-dlp cookies file |
@@ -222,6 +276,12 @@ rather than turned into a query.
   unreachable; the page falls back to the original link.
 - **Voice search does nothing** — the microphone needs a secure origin (https or
   localhost). On a LAN IP the browser blocks it.
+- **The live site plays the band but never sings, and there is no "Connect my
+  model" button** — the deployed page is older than `1ea803f`; redeploy so the
+  page can take a model address at runtime.
+- **The tunnel answers 404 with no body** — cloudflared picked up
+  `~/.cloudflared/config.yml`. Run the tunnel with
+  `--config tools\bin\quick-tunnel.yml` as `start.ps1` does.
 
 `vercel.json` is a leftover deployment target that routes everything to
 `app.py`; the Cloudflare Worker is the supported static deployment.
