@@ -66,6 +66,17 @@ function Answers([int]$port) {
     return ($code -eq '200')
 }
 
+# Health only answers once Flask is listening, which for the song service is
+# after torch imports - about 40 s. Probing alone therefore says "not running"
+# during exactly the window a second click lands in, and the second click used
+# to start a second copy that then failed to bind 8090. Asking whether the
+# process exists covers that window: one launcher run, one service.
+function Starting([string]$marker) {
+    $found = Get-CimInstance Win32_Process -Filter "Name like '%python%'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like "*$marker*" }
+    return [bool]$found
+}
+
 # Nothing here waits for a model. Importing torch and warming 3.5B parameters
 # takes a minute or two, and a launcher that sits through it looks hung: the
 # process is started and this returns, health is checked separately.
@@ -73,6 +84,8 @@ function Answers([int]$port) {
 # --- downloader ----------------------------------------------------------
 if (Answers $DownloadPort) {
     Say "downloader already on 127.0.0.1:$DownloadPort"
+} elseif (Starting '*downloader_service*') {
+    Say 'downloader is still starting, leaving it alone'
 } else {
     $service = Join-Path $root 'downloader_service'
     $python = Join-Path $service '.venv\Scripts\python.exe'
@@ -92,6 +105,8 @@ if (Answers $DownloadPort) {
 # --- song service, on CUDA ----------------------------------------------
 if (Answers $SongPort) {
     Say "song service already on 127.0.0.1:$SongPort"
+} elseif (Starting '*song_service*') {
+    Say 'song service is still starting (torch import takes about 40 s), leaving it alone'
 } else {
     $service = Join-Path $root 'song_service'
     $python = Join-Path $service '.venv\Scripts\python.exe'
