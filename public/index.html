@@ -511,9 +511,97 @@
             overflow: hidden;
         }
         .player-video { width: 100%; aspect-ratio: 16/9; }
+        .player-content { display: flex; flex-direction: column; max-height: 92vh; overflow: auto; }
         .player-info { padding: 16px; }
+        .player-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
         .player-title { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
         .player-desc { color: var(--text-dim); font-size: 14px; }
+        /* One song, composed from the whole indexed library */
+        .library-song-btn {
+            margin-left: auto;
+            background: rgba(0, 206, 201, 0.1);
+            border: 1px solid rgba(0, 206, 201, 0.4);
+            color: var(--accent2);
+            font-size: 12px;
+            font-weight: 600;
+            padding: 8px 14px;
+            border-radius: 999px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .library-song-btn:hover { background: rgba(0, 206, 201, 0.2); }
+        .library-song-btn[disabled] { opacity: 0.55; cursor: default; }
+
+        /* Generate: an edited link for the same video, built from its own plan */
+        .player-gen-btn {
+            flex: none;
+            background: rgba(0, 206, 201, 0.12);
+            border: 1px solid rgba(0, 206, 201, 0.45);
+            color: var(--accent2);
+            font-size: 11.5px;
+            font-weight: 600;
+            padding: 6px 14px;
+            border-radius: 999px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .player-gen-btn:hover { background: rgba(0, 206, 201, 0.2); }
+        .player-generate {
+            margin-top: 14px;
+            padding: 12px 14px;
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            font-size: 12px;
+            line-height: 1.6;
+            color: var(--text-dim);
+        }
+        .player-generate .gen-title {
+            font-size: 10px;
+            letter-spacing: 0.09em;
+            text-transform: uppercase;
+            color: var(--accent2);
+            margin-bottom: 6px;
+        }
+        .player-generate .gen-link {
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 11px;
+            color: var(--text);
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 8px 10px;
+            word-break: break-all;
+            margin: 8px 0;
+        }
+        .player-generate .gen-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+        .gen-audio { width: 100%; display: block; padding: 18px 16px; background: #05090a; }
+        .gen-lyrics { margin-top: 12px; font-size: 12px; line-height: 1.7; color: var(--text-dim); }
+        .gen-lyrics h4 {
+            margin: 10px 0 2px;
+            font-size: 10px;
+            letter-spacing: 0.09em;
+            text-transform: uppercase;
+            color: var(--accent2);
+        }
+        .gen-lyrics p { margin: 0; }
+        .gen-canvas, .gen-video {
+            width: 100%;
+            aspect-ratio: 16 / 9;
+            display: block;
+            background: #05090a;
+        }
+        .player-generate button, .player-generate a.gen-open {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--text);
+            font-size: 11px;
+            padding: 6px 11px;
+            border-radius: 7px;
+            cursor: pointer;
+            text-decoration: none;
+        }
+        .player-generate button:hover, .player-generate a.gen-open:hover { border-color: var(--accent2); }
         .player-close {
             position: absolute;
             top: 20px;
@@ -622,6 +710,8 @@
             <div class="stat-item">Searches run: <span class="stat-value" id="statSearches">0</span></div>
             <div class="stat-item">Clicks recorded: <span class="stat-value" id="statClicks">0</span></div>
         </div>
+        <button class="library-song-btn" id="librarySongBtn" onclick="startLibrarySong()"
+                title="Compose one song from every track in the library">Library song</button>
         <div class="conn-chip" id="connChip" data-state="connecting"
              title="Checking the connection to the search server">
             <span class="conn-dot"></span>
@@ -662,8 +752,12 @@
         <div class="player-content" onclick="event.stopPropagation()">
             <div class="player-video" id="playerVideo"></div>
             <div class="player-info">
-                <div class="player-title" id="playerTitle"></div>
+                <div class="player-head">
+                    <div class="player-title" id="playerTitle"></div>
+                    <button class="player-gen-btn" id="playerGenBtn" onclick="generateRemixLink(event)" hidden>Generate</button>
+                </div>
                 <div class="player-desc" id="playerDesc"></div>
+                <div class="player-generate" id="playerGenerate" hidden></div>
                 <a class="player-open" id="playerOpen" href="#" target="_blank" rel="noopener noreferrer"
                    onclick="event.stopPropagation()">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>
@@ -1033,6 +1127,9 @@
         // A broad query can match the whole library, so cards are added in
         // batches: no cap, but the page keeps painting while they arrive.
         function appendResults(results) {
+            // Kept so a song can be built from what this search actually found,
+            // not only from the whole index.
+            window._lastResults = results;
             const CHUNK = 60;
             let index = 0;
             function step() {
@@ -1048,6 +1145,7 @@
         }
 
         function appendResult(result) {
+            window._lastResults = (window._lastResults || []).concat([result]);
             const card = createVideoCard(result);
             resultsContainer.appendChild(card);
         }
@@ -1164,8 +1262,18 @@
         // Words that say nothing about the content; dropped before the theory.
         const REMIX_NOISE = new Set(['official', 'video', 'audio', 'lyrics', 'lyric', 'hd', 'hq', 'full', 'new', 'the', 'and', 'with', 'from', 'that', 'this', 'for', 'you', 'your', 'feat', 'ft', 'prod', 'remix', 'edit', 'clip', 'music']);
 
-        function remixKeywords(title) {
-            return String(title || '')
+        // Words for the theory and the hook. The title first, because it is the
+        // only part of a listing someone chose deliberately, then the description
+        // to avoid a one-word pool that makes the hook repeat itself.
+        function remixKeywords(title, description) {
+            const fromTitle = keywordList(title);
+            const fromDescription = keywordList(description);
+            const combined = fromTitle.concat(fromDescription.filter(word => fromTitle.indexOf(word) === -1));
+            return combined.slice(0, 4);
+        }
+
+        function keywordList(text) {
+            return String(text || '')
                 .toLowerCase()
                 .replace(/[\(\)\[\]{}|/\\]/g, ' ')
                 .split(/[^a-z0-9']+/)
@@ -1201,9 +1309,10 @@
                 ? result.genre.alternatives[0].genre : '';
             const style = REMIX_STYLES[genre] || REMIX_NEUTRAL;
             const seconds = parseDuration(result.duration);
-            const words = remixKeywords(title);
-            const wordA = words[0] || 'the hook';
-            const wordB = words[1] || 'the low end';
+            const words = remixKeywords(title, description);
+            // Two different words: repeating one makes the hook read as a mistake.
+            const wordA = words[0] || (genre ? genre : 'the signal');
+            const wordB = words[1] || (words[0] ? 'the room tone' : 'the low end');
 
             // What kind of thing the link is, judged from the words around it.
             const formats = [];
@@ -1260,6 +1369,7 @@
                     `${wordA} in the low end,\n${wordB} left in the light.`,
                     `Keep the ${wordA} loop,\nlet the ${wordB} answer it.`,
                     `Everything drops but ${wordA},\nand ${wordB} carries it out.`,
+                    `Hold the ${wordA} close,\nlet the ${wordB} go.`,
                 ], seed >>> 11),
                 visuals: `Palette: ${style.palette}. Cut on the transients, hold one frame through each drop, and let the source clip reappear once — degraded — at the second peak.`,
                 sample: style.sample,
@@ -1319,6 +1429,965 @@
             btn.textContent = opening ? 'Hide remix' : 'Remix';
         }
 
+        // --- Generate an edited version of the link ---
+        // Pressing Generate produces a different link to the same video: a window
+        // around the turn taken from the card's plan, looping, with the original
+        // audio muted so a new track can sit over it. It is a real link you can
+        // play here, open, or copy - not a note about editing.
+        function clockToSeconds(value) {
+            const match = /^(\d+):(\d{1,2})(?::(\d{1,2}))?$/.exec(String(value || '').trim());
+            if (!match) return 0;
+            const first = Number(match[1]);
+            const second = Number(match[2]);
+            const third = match[3] ? Number(match[3]) : null;
+            return third === null ? first * 60 + second : first * 3600 + second * 60 + third;
+        }
+
+        function buildRemixLink(url, doc) {
+            const structure = (doc && doc.remix && doc.remix.structure) || [];
+            // The third mark is the turn in every generated shape; fall back to
+            // a minute in when the plan is short.
+            const start = structure[2] ? clockToSeconds(structure[2][0]) : 60;
+            const end = start + 45;
+
+            const youtube = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/);
+            if (youtube) {
+                const id = youtube[1];
+                return {
+                    href: `https://www.youtube.com/embed/${id}?start=${start}&end=${end}&loop=1&playlist=${id}&mute=1&autoplay=1&rel=0`,
+                    host: 'YouTube',
+                    start, end, loop: true, muted: true,
+                };
+            }
+
+            const dailymotion = url.match(/dailymotion\.com\/video\/([a-zA-Z0-9]+)/);
+            if (dailymotion) {
+                return {
+                    href: `https://www.dailymotion.com/embed/video/${dailymotion[1]}?start=${start}&autoplay=1&mute=1`,
+                    host: 'Dailymotion',
+                    start, end, loop: false, muted: true,
+                };
+            }
+
+            const vimeo = url.match(/vimeo\.com\/(\d+)/);
+            if (vimeo) {
+                return {
+                    href: `https://player.vimeo.com/video/${vimeo[1]}#t=${start}s`,
+                    host: 'Vimeo',
+                    start, end, loop: false, muted: false,
+                };
+            }
+
+            return null;
+        }
+
+        function safeFileName(text) {
+            const cleaned = String(text || 'remix').replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '-');
+            return cleaned.slice(0, 60) || 'remix';
+        }
+
+        function formatClock(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = seconds % 60;
+            return mins + ':' + String(secs).padStart(2, '0');
+        }
+
+        // --- Generated piece: Web Audio track + canvas picture, inside the player ---
+        // Everything is synthesised locally from the card's document: its tempo,
+        // its key, its palette and its hook. No server, no key, and the same
+        // video always produces the same piece.
+        const REMIX_PALETTES = {
+            dubstep: ['#ff7a18', '#7a2d0d', '#0a0c10'],
+            riddim: ['#9aa8b8', '#2b333d', '#05070a'],
+            techno: ['#e8e8e8', '#3a3f45', '#0b0d10'],
+            house: ['#ffd166', '#6b4a1c', '#0d0b12'],
+            'drum and bass': ['#6fb3ff', '#173a63', '#04060c'],
+            jungle: ['#8fe37a', '#1e4a22', '#04070a'],
+            reggae: ['#f2c14e', '#2b5c37', '#060b08'],
+            dub: ['#b39cff', '#332457', '#05030a'],
+            'hip hop': ['#e0b088', '#4a3123', '#070505'],
+            trap: ['#b06bff', '#3a1b57', '#050308'],
+            ambient: ['#cfe6ff', '#31414f', '#05080b'],
+            trance: ['#ffb347', '#2b3f63', '#04070e'],
+            garage: ['#7ef0c0', '#1c4740', '#040a09'],
+            'lo-fi': ['#e3c48c', '#4a3a24', '#0a0705'],
+        };
+        const REMIX_PALETTE_DEFAULT = ['#00cec9', '#1b3a3d', '#05090a'];
+
+        const KEY_TABLE = { c: 0, 'c#': 1, db: 1, d: 2, 'd#': 3, eb: 3, e: 4, f: 5, 'f#': 6, gb: 6, g: 7, 'g#': 8, ab: 8, a: 9, 'a#': 10, bb: 10, b: 11 };
+
+        function remixTempo(doc) {
+            const match = /(\d{2,3})/.exec((doc && doc.remix && doc.remix.tempo) || '');
+            const bpm = match ? Number(match[1]) : 110;
+            return Math.min(180, Math.max(60, bpm));
+        }
+
+        function remixRoot(doc) {
+            const name = String((doc && doc.remix && doc.remix.key) || 'A minor').toLowerCase().split(/\s+/)[0];
+            const semitone = KEY_TABLE[name] !== undefined ? KEY_TABLE[name] : 9;
+            // A3 = 220 Hz, then an octave down through remixRoot()/2 at the voice.
+            return 440 * Math.pow(2, (semitone - 9) / 12) / 2;
+        }
+
+        let remixAudio = null;
+
+        function noiseBuffer(ctx) {
+            const buffer = ctx.createBuffer(1, Math.floor(ctx.sampleRate * 1.5), ctx.sampleRate);
+            const data = buffer.getChannelData(0);
+            for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+            return buffer;
+        }
+
+        function voiceKick(ctx, dest, time) {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.frequency.setValueAtTime(130, time);
+            osc.frequency.exponentialRampToValueAtTime(42, time + 0.12);
+            gain.gain.setValueAtTime(0.9, time);
+            gain.gain.exponentialRampToValueAtTime(0.001, time + 0.34);
+            osc.connect(gain).connect(dest);
+            osc.start(time);
+            osc.stop(time + 0.36);
+        }
+
+        function voiceHat(ctx, dest, noise, time, level) {
+            const src = ctx.createBufferSource();
+            src.buffer = noise;
+            const filter = ctx.createBiquadFilter();
+            filter.type = 'highpass';
+            filter.frequency.value = 7000;
+            const gain = ctx.createGain();
+            gain.gain.setValueAtTime(level, time);
+            gain.gain.exponentialRampToValueAtTime(0.001, time + 0.06);
+            src.connect(filter).connect(gain).connect(dest);
+            src.start(time);
+            src.stop(time + 0.08);
+        }
+
+        function voiceSnare(ctx, dest, noise, time) {
+            const src = ctx.createBufferSource();
+            src.buffer = noise;
+            const filter = ctx.createBiquadFilter();
+            filter.type = 'bandpass';
+            filter.frequency.value = 1900;
+            filter.Q.value = 0.9;
+            const gain = ctx.createGain();
+            gain.gain.setValueAtTime(0.5, time);
+            gain.gain.exponentialRampToValueAtTime(0.001, time + 0.18);
+            src.connect(filter).connect(gain).connect(dest);
+            src.start(time);
+            src.stop(time + 0.2);
+        }
+
+        function voiceBass(ctx, dest, time, freq, dur) {
+            const osc = ctx.createOscillator();
+            const filter = ctx.createBiquadFilter();
+            const gain = ctx.createGain();
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(freq, time);
+            filter.type = 'lowpass';
+            filter.frequency.setValueAtTime(220, time);
+            filter.frequency.exponentialRampToValueAtTime(520, time + 0.1);
+            filter.Q.value = 6;
+            gain.gain.setValueAtTime(0.0001, time);
+            gain.gain.exponentialRampToValueAtTime(0.42, time + 0.02);
+            gain.gain.exponentialRampToValueAtTime(0.001, time + dur);
+            osc.connect(filter).connect(gain).connect(dest);
+            osc.start(time);
+            osc.stop(time + dur + 0.05);
+        }
+
+        function voicePad(ctx, dest, time, freqs, dur) {
+            const gain = ctx.createGain();
+            gain.gain.setValueAtTime(0.0001, time);
+            gain.gain.linearRampToValueAtTime(0.12, time + dur * 0.4);
+            gain.gain.linearRampToValueAtTime(0.0001, time + dur);
+            const filter = ctx.createBiquadFilter();
+            filter.type = 'lowpass';
+            filter.frequency.value = 1400;
+            filter.connect(gain).connect(dest);
+            freqs.forEach((freq, index) => {
+                const osc = ctx.createOscillator();
+                osc.type = 'sawtooth';
+                osc.frequency.value = freq;
+                osc.detune.value = (index - 1) * 7;
+                osc.connect(filter);
+                osc.start(time);
+                osc.stop(time + dur + 0.1);
+            });
+        }
+
+        function stopRemixAudio() {
+            if (!remixAudio) return;
+            const { ctx, timer, master } = remixAudio;
+            clearInterval(timer);
+            try {
+                master.gain.cancelScheduledValues(ctx.currentTime);
+                master.gain.setValueAtTime(0, ctx.currentTime);
+            } catch (err) {}
+            setTimeout(() => { try { ctx.close(); } catch (err) {} }, 250);
+            remixAudio = null;
+        }
+
+        function startRemixAudio(doc, withCapture) {
+            stopRemixAudio();
+            const AudioCtor = window.AudioContext || window.webkitAudioContext;
+            if (!AudioCtor) return null;
+            const ctx = new AudioCtor();
+            const master = ctx.createGain();
+            master.gain.value = 0.55;
+            const comp = ctx.createDynamicsCompressor();
+            master.connect(comp).connect(ctx.destination);
+            let dest = null;
+            if (withCapture) {
+                dest = ctx.createMediaStreamDestination();
+                comp.connect(dest);
+            }
+
+            const bpm = remixTempo(doc);
+            const stepDur = 60 / bpm / 4;
+            const root = remixRoot(doc);
+            const genre = String((doc && doc.genre) || '');
+            const halfTime = /dubstep|riddim|trap|drum and bass|jungle|lo-fi|ambient/.test(genre);
+            // Half-time scenes get the kick late and the snare on three; four to
+            // the floor keeps a kick on every beat.
+            const kickSteps = halfTime ? [0, 10, 11] : [0, 4, 8, 12];
+            const snareSteps = halfTime ? [8] : [4, 12];
+            const degrees = halfTime ? [0, 0, 5, 3] : [0, 3, 5, 3];
+            const noise = noiseBuffer(ctx);
+            const totalSteps = 128;   // eight bars, then it repeats
+            const loopSeconds = totalSteps * stepDur;
+
+            let step = 0;
+            const baseTime = ctx.currentTime + 0.2;
+            const schedule = () => {
+                const horizon = ctx.currentTime + 0.5;
+                while (baseTime + step * stepDur < horizon) {
+                    const time = baseTime + step * stepDur;
+                    const within = step % 16;
+                    const bar = Math.floor((step % totalSteps) / 16);
+                    if (kickSteps.indexOf(within) !== -1) voiceKick(ctx, master, time);
+                    if (snareSteps.indexOf(within) !== -1) voiceSnare(ctx, master, noise, time);
+                    if (step % 2 === 0) voiceHat(ctx, master, noise, time, within % 8 === 0 ? 0.14 : 0.07);
+                    if (step % 4 === 0) voiceBass(ctx, master, time, root * Math.pow(2, degrees[bar % degrees.length] / 12), stepDur * 3.6);
+                    if (step % 32 === 0) voicePad(ctx, master, time, [0, 3, 7].map(d => root * 4 * Math.pow(2, d / 12)), stepDur * 30);
+                    step++;
+                }
+            };
+            schedule();
+            const timer = setInterval(schedule, 100);
+            if (ctx.state === 'suspended' && ctx.resume) ctx.resume();
+            remixAudio = { ctx, master, timer, dest, bpm, loopSeconds };
+            return remixAudio;
+        }
+
+        function startRemixCanvas(canvas, doc, bpm) {
+            const draw = canvas.getContext('2d');
+            const palette = REMIX_PALETTES[(doc && doc.genre) || ''] || REMIX_PALETTE_DEFAULT;
+            const started = performance.now();
+            const beat = 60 / bpm;
+            let frame = 0;
+            const render = (now) => {
+                const t = (now - started) / 1000;
+                const w = canvas.width;
+                const h = canvas.height;
+                const pulse = Math.exp(-6 * ((t % beat) / beat));
+
+                draw.fillStyle = palette[2];
+                draw.fillRect(0, 0, w, h);
+
+                const glow = draw.createRadialGradient(
+                    w * (0.35 + 0.12 * Math.sin(t * 0.5)), h * (0.4 + 0.06 * Math.cos(t * 0.37)), 20,
+                    w * 0.5, h * 0.5, w * 0.75);
+                glow.addColorStop(0, palette[0]);
+                glow.addColorStop(1, 'rgba(0,0,0,0)');
+                draw.globalAlpha = 0.26 + pulse * 0.4;
+                draw.fillStyle = glow;
+                draw.fillRect(0, 0, w, h);
+                draw.globalAlpha = 1;
+
+                const bars = 56;
+                for (let i = 0; i < bars; i++) {
+                    const wobble = 0.5 + 0.5 * Math.sin(t * 2.4 + i * 0.35);
+                    const barHeight = h * (0.04 + 0.16 * wobble * (0.45 + pulse));
+                    draw.fillStyle = palette[1];
+                    draw.fillRect((i / bars) * w + 3, h - barHeight - 28, (w / bars) - 6, barHeight);
+                }
+
+                draw.fillStyle = 'rgba(255,255,255,0.94)';
+                draw.font = '600 30px system-ui, -apple-system, Segoe UI, sans-serif';
+                draw.fillText(String(doc.remix.title).slice(0, 46), 40, 66);
+                draw.fillStyle = palette[0];
+                draw.font = '600 16px ui-monospace, monospace';
+                draw.fillText(`${bpm} BPM · ${doc.remix.key} · ${doc.genre || 'unclassified'}`, 40, 96);
+                draw.fillStyle = 'rgba(255,255,255,0.78)';
+                draw.font = 'italic 20px system-ui, sans-serif';
+                String(doc.remix.hook).split('\n').forEach((line, i) => {
+                    draw.fillText(line, 40, h - 84 + i * 26);
+                });
+
+                frame = requestAnimationFrame(render);
+            };
+            frame = requestAnimationFrame(render);
+            return () => cancelAnimationFrame(frame);
+        }
+
+        // --- Library song ---
+        // One piece of music composed from the whole index, not from one video:
+        // the genres that actually dominate the library decide the sections and
+        // the tempo, the words that recur most become the lyric, and it is
+        // rendered offline and mastered before you hear a note.
+        function librarySummary() {
+            const videos = videoIndex || [];
+            const genreCounts = new Map();
+            const wordCounts = new Map();
+            videos.forEach(video => {
+                const genre = video.g && video.g.n;
+                if (genre) genreCounts.set(genre, (genreCounts.get(genre) || 0) + 1);
+                String(video.t || '').toLowerCase().split(/[^a-z0-9']+/).forEach(word => {
+                    if (word.length < 4 || REMIX_NOISE.has(word)) return;
+                    wordCounts.set(word, (wordCounts.get(word) || 0) + 1);
+                });
+            });
+            const genres = [...genreCounts.entries()]
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 4)
+                .map(([name, count]) => ({ name, count }));
+            const words = [...wordCounts.entries()]
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 32)
+                .map(([word]) => word);
+            return { total: videos.length, genres, words };
+        }
+
+        // A seed makes every press a new song, while the same seed always gives
+        // the same one back. Nothing here is stored: the seed is the recipe.
+        function libraryTempo(summary, seed) {
+            const values = summary.genres.map(genre => (REMIX_STYLES[genre.name] || REMIX_NEUTRAL).bpm);
+            if (!values.length) return 118 + (seed % 5);
+            const average = values.reduce((sum, value) => sum + value, 0) / values.length;
+            const jitter = (seed % 9) - 4;
+            return Math.round(Math.min(158, Math.max(72, average + jitter)));
+        }
+
+        function librarySections(summary, seed) {
+            const top = summary.genres.map(genre => genre.name);
+            // Which scene leads, and the order of the middle sections, changes
+            // with the seed, so two songs from the same library differ.
+            const rotate = seed % Math.max(1, top.length);
+            const order = top.slice(rotate).concat(top.slice(0, rotate));
+            const main = order[0] || 'techno';
+            const second = order[1] || main;
+            const third = order[2] || main;
+            const swap = seed % 2 === 0;
+            return [
+                { name: 'Intro', bars: 4, style: main, energy: 0.3, half: true },
+                { name: 'Build', bars: 8, style: main, energy: 0.7, half: true },
+                { name: `${main} drop`, bars: 16, style: main, energy: 1, half: true },
+                { name: 'Verse', bars: 8, style: swap ? third : second, energy: 0.8 + (seed % 2) * 0.1, half: false },
+                { name: 'Chorus', bars: 16, style: second, energy: 1, half: false },
+                { name: 'Bridge', bars: swap ? 12 : 8, style: third, energy: 0.55, half: true },
+                { name: 'Final chorus', bars: 16, style: main, energy: 1, half: false },
+                { name: 'Outro', bars: 4, style: main, energy: 0.35, half: true },
+            ];
+        }
+
+        function libraryLyrics(summary, seed) {
+            const words = summary.words.length ? summary.words : ['signal', 'low end', 'night', 'static'];
+            // A different seed draws a different set of words from the same pool.
+            const offset = seed % words.length;
+            const word = (index) => words[(index + offset) % words.length];
+            const line = (text) => text.charAt(0).toUpperCase() + text.slice(1);
+            const total = summary.total ? summary.total.toLocaleString() : 'every';
+            return [
+                { section: 'Chorus', lines: [
+                    line(`${word(0)} in the low end, ${word(1)} in the light`),
+                    'Everything we gathered is coming back tonight',
+                    line(`Keep the ${word(2)} moving, let the ${word(3)} decide`),
+                    'Every track we ever found is singing in the wide',
+                ] },
+                { section: 'Verse 1', lines: [
+                    line(`${word(4)} on the first bar, ${word(5)} on the last`),
+                    'Half the library in the room and half of it in the past',
+                    line(`We counted ${total} of them before we began`),
+                    'Now they all come through the speakers as a single plan',
+                ] },
+                { section: 'Verse 2', lines: [
+                    line(`${word(6)} in the verses, ${word(7)} in the drums`),
+                    'Nothing here is sampled, it is everything it becomes',
+                    line(`Build it from the ${word(8)}, hold it on the ${word(9)}`),
+                    'One song out of all of them, and none of them undone',
+                ] },
+                { section: 'Bridge', lines: [
+                    'Strip it back until the room tone is the only sound',
+                    'Count the tracks that brought us here, then let them go',
+                ] },
+            ];
+        }
+
+        function rootFromKey(key) {
+            const name = String(key || 'A minor').toLowerCase().split(/\s+/)[0];
+            const semitone = KEY_TABLE[name] !== undefined ? KEY_TABLE[name] : 9;
+            return 440 * Math.pow(2, (semitone - 9) / 12) / 2;
+        }
+
+        function softClipCurve() {
+            const size = 2048;
+            const curve = new Float32Array(size);
+            for (let i = 0; i < size; i++) {
+                const x = (i / (size - 1)) * 2 - 1;
+                curve[i] = Math.tanh(x * 1.35);
+            }
+            return curve;
+        }
+
+        function encodeWav(buffer) {
+            const channels = buffer.numberOfChannels;
+            const frames = buffer.length;
+            const view = new DataView(new ArrayBuffer(44 + frames * channels * 2));
+            const write = (offset, text) => {
+                for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
+            };
+            write(0, 'RIFF');
+            view.setUint32(4, 36 + frames * channels * 2, true);
+            write(8, 'WAVE');
+            write(12, 'fmt ');
+            view.setUint32(16, 16, true);
+            view.setUint16(20, 1, true);
+            view.setUint16(22, channels, true);
+            view.setUint32(24, buffer.sampleRate, true);
+            view.setUint32(28, buffer.sampleRate * channels * 2, true);
+            view.setUint16(32, channels * 2, true);
+            view.setUint16(34, 16, true);
+            write(36, 'data');
+            view.setUint32(40, frames * channels * 2, true);
+
+            const data = [];
+            for (let channel = 0; channel < channels; channel++) data.push(buffer.getChannelData(channel));
+            let offset = 44;
+            for (let frame = 0; frame < frames; frame++) {
+                for (let channel = 0; channel < channels; channel++) {
+                    const sample = Math.max(-1, Math.min(1, data[channel][frame]));
+                    view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+                    offset += 2;
+                }
+            }
+            return new Blob([view], { type: 'audio/wav' });
+        }
+
+        function voiceLead(ctx, dest, time, freq, dur) {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            const filter = ctx.createBiquadFilter();
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(freq, time);
+            filter.type = 'lowpass';
+            filter.frequency.value = 2600;
+            gain.gain.setValueAtTime(0.0001, time);
+            gain.gain.exponentialRampToValueAtTime(0.16, time + 0.03);
+            gain.gain.exponentialRampToValueAtTime(0.001, time + dur);
+            osc.connect(filter).connect(gain).connect(dest);
+            osc.start(time);
+            osc.stop(time + dur + 0.05);
+        }
+
+        async function renderLibrarySong(summary, seed) {
+            const sampleRate = 44100;
+            const bpm = libraryTempo(summary, seed);
+            const barSeconds = (60 / bpm) * 4;
+            const sections = librarySections(summary, seed);
+            // Three groove variants, so the same words do not always sit on the
+            // same pattern.
+            const variant = seed % 3;
+            const totalBars = sections.reduce((sum, section) => sum + section.bars, 0);
+            const seconds = totalBars * barSeconds;
+
+            // One channel keeps the render quick; the master chain is what makes
+            // it sit level instead of sounding like a flat loop.
+            const offline = new OfflineAudioContext(1, Math.ceil(seconds * sampleRate), sampleRate);
+            const master = offline.createGain();
+            master.gain.value = 0.85;
+            const highpass = offline.createBiquadFilter();
+            highpass.type = 'highpass';
+            highpass.frequency.value = 32;
+            const comp = offline.createDynamicsCompressor();
+            comp.threshold.value = -20;
+            comp.knee.value = 14;
+            comp.ratio.value = 3.2;
+            comp.attack.value = 0.006;
+            comp.release.value = 0.2;
+            const limiter = offline.createWaveShaper();
+            limiter.curve = softClipCurve();
+            limiter.oversample = '2x';
+            master.connect(highpass).connect(comp).connect(limiter).connect(offline.destination);
+
+            const noise = noiseBuffer(offline);
+            let barStart = 0;
+
+            sections.forEach(section => {
+                const style = REMIX_STYLES[section.style] || REMIX_NEUTRAL;
+                const root = rootFromKey(style.keys[0]);
+                for (let bar = 0; bar < section.bars; bar++) {
+                    const barTime = (barStart + bar) * barSeconds;
+                    const stepSeconds = barSeconds / 16;
+                    const degree = [0, 0, 5, 3][bar % 4];
+                    for (let step = 0; step < 16; step++) {
+                        const time = barTime + step * stepSeconds;
+                        const kick = section.half
+                            ? (variant === 1 ? (step === 0 || step === 11) : variant === 2 ? (step === 0 || step === 7 || step === 10) : (step === 0 || step === 10))
+                            : (variant === 1 ? step === 0 || step === 3 || step === 8 || step === 11 : step % 4 === 0);
+                        const snare = section.half
+                            ? (variant === 2 ? (step === 6 || step === 8) : step === 8)
+                            : (variant === 1 ? (step === 4 || step === 11) : (step === 4 || step === 12));
+                        if (kick && section.energy > 0.4) voiceKick(offline, master, time);
+                        if (snare && section.energy > 0.6) voiceSnare(offline, master, noise, time);
+                        if (step % (section.half ? 4 : 2) === 0 && section.energy > 0.4) {
+                            voiceHat(offline, master, noise, time, 0.05 + section.energy * 0.06);
+                        }
+                        if (step % 4 === 0 && section.energy > 0.5) {
+                            voiceBass(offline, master, time, root * Math.pow(2, degree / 12), stepSeconds * 3.4);
+                        }
+                        // A lead motif only where the arrangement can carry it.
+                        if (section.energy >= 0.8 && [0, 6, 10, 14].indexOf(step) !== -1) {
+                            const shapes = [[0, 3, 7, 5], [0, 5, 3, 10], [0, 7, 10, 3]];
+                            const shape = shapes[seed % shapes.length];
+                            const motif = shape[Math.floor(step / 4) % shape.length];
+                            voiceLead(offline, master, time, root * 4 * Math.pow(2, motif / 12), 0.24);
+                        }
+                    }
+                    if (bar % 2 === 0 && section.energy > 0.2) {
+                        voicePad(offline, master, barTime,
+                            [0, 3, 7].map(d => root * 2 * Math.pow(2, d / 12)), barSeconds * 1.9);
+                    }
+                }
+                barStart += section.bars;
+            });
+
+            const buffer = await offline.startRendering();
+            // Bring the finished mix to a consistent peak: loud enough to sit
+            // with other music, with headroom so nothing clips.
+            const channel = buffer.getChannelData(0);
+            let peak = 0;
+            for (let i = 0; i < channel.length; i++) peak = Math.max(peak, Math.abs(channel[i]));
+            if (peak > 0) {
+                const scale = 0.94 / peak;
+                for (let i = 0; i < channel.length; i++) channel[i] *= scale;
+            }
+            return { buffer, bpm, seconds, sections };
+        }
+
+        // What the song is built from: the search you just ran when it produced
+        // genre evidence, otherwise the whole index. The music type therefore
+        // follows what you searched for.
+        function songSource() {
+            const recent = window._lastResults || [];
+            const genres = new Map();
+            const words = new Map();
+            recent.forEach(result => {
+                const genre = result.genre && result.genre.genre;
+                if (genre) genres.set(genre, (genres.get(genre) || 0) + 1);
+                String(result.title || '').toLowerCase().split(/[^a-z0-9']+/).forEach(word => {
+                    if (word.length < 4 || REMIX_NOISE.has(word)) return;
+                    words.set(word, (words.get(word) || 0) + 1);
+                });
+            });
+
+            const ranked = [...genres.entries()].sort((a, b) => b[1] - a[1]);
+            if (ranked.length >= 2) {
+                return {
+                    scope: 'search',
+                    label: currentQuery ? `the ${recent.length.toLocaleString()} results for “${currentQuery}”` : `the ${recent.length} results`,
+                    total: recent.length,
+                    genres: ranked.slice(0, 4).map(([name, count]) => ({ name, count })),
+                    words: [...words.entries()].sort((a, b) => b[1] - a[1]).slice(0, 32).map(([word]) => word),
+                };
+            }
+            const library = librarySummary();
+            return {
+                scope: 'library',
+                label: 'the whole library',
+                total: library.total,
+                genres: library.genres,
+                words: library.words,
+            };
+        }
+
+        // A prompt in the shape the music model expects: genre, tempo, mood,
+        // and the words this library keeps repeating.
+        function modelPrompt(summary, seed) {
+            const lead = summary.genres[0]
+                ? (REMIX_STYLES[summary.genres[0].name] || REMIX_NEUTRAL)
+                : REMIX_NEUTRAL;
+            const genres = summary.genres.slice(0, 3).map(genre => genre.name).join(', ');
+            return [
+                genres ? `${genres} song` : 'electronic song',
+                `${libraryTempo(summary, seed)} bpm`,
+                lead.mood,
+                summary.words.length ? `themes of ${summary.words.slice(0, 4).join(', ')}` : '',
+                'warm analog production, mastered, wide stereo, clear emotional lead vocal',
+            ].filter(Boolean).join(', ');
+        }
+
+        // Where a song can come from, in order: this origin (the Worker route,
+        // or the Flask app), a local model service on 8090 when the page is on
+        // this machine, then any URL configured in config.js. Each answer is
+        // either finished audio (Cloudflare model) or a job to poll (local ACE).
+        async function postSong(base, payload) {
+            let response;
+            try {
+                response = await fetch(base + '/api/song', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+            } catch (err) {
+                return null;
+            }
+            const isJson = (response.headers.get('content-type') || '').includes('application/json');
+            // A plain static host, or Flask without the route, answers with HTML.
+            if (!isJson) return null;
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(data.error || 'the song service refused the request');
+            }
+            return { data, base };
+        }
+
+        async function requestModelSong(summary, lyrics, seed) {
+            const lyricText = lyrics.map(part => part.lines.join('\n')).join('\n\n');
+            const payload = { prompt: modelPrompt(summary, seed), lyrics: lyricText, seconds: 60 };
+
+            const bases = [''];
+            if (/^(127\.0\.0\.1|localhost)$/.test(location.hostname)) {
+                bases.push('http://127.0.0.1:8090');
+            }
+            if (window.SONG_API) bases.push(String(window.SONG_API).replace(/\/+$/, ''));
+
+            let answer = null;
+            for (const base of bases) {
+                answer = await postSong(base, payload);
+                if (answer) break;
+            }
+            if (!answer) return null;
+            if (answer.data.audio) return answer.data;
+            if (!answer.data.token) return null;
+
+            // A job: the local model reports progress while the GPU works.
+            const token = answer.data.token;
+            for (let attempt = 0; attempt < 300; attempt++) {
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                let job;
+                try {
+                    job = await (await fetch(answer.base + '/api/song/' + token)).json();
+                } catch (err) {
+                    continue;
+                }
+                if (job.status === 'complete') {
+                    return { audio: answer.base + '/song_file/' + token, model: 'ACE-Step (local)' };
+                }
+                if (job.status === 'error') {
+                    throw new Error(job.error || 'the model failed');
+                }
+                const status = document.getElementById('songStatus');
+                if (status) status.textContent = `Composing on this machine... ${Math.round(job.elapsed || 0)}s (${job.status})`;
+            }
+            throw new Error('the model took too long to finish');
+        }
+
+        async function startLibrarySong() {
+            const btn = document.getElementById('librarySongBtn');
+            const overlay = document.getElementById('playerOverlay');
+            const stage = document.getElementById('playerVideo');
+            const panel = document.getElementById('playerGenerate');
+            const genBtn = document.getElementById('playerGenBtn');
+            if (!stage || !panel) return;
+
+            stopRemixAudio();
+            if (window._remixStopVisuals) { window._remixStopVisuals(); window._remixStopVisuals = null; }
+            if (genBtn) genBtn.hidden = true;
+            if (btn) { btn.disabled = true; btn.textContent = 'Composing...'; }
+
+            stage.innerHTML = '<div class="gen-canvas" style="display:flex;align-items:center;justify-content:center;color:#8b9aa0;font-size:13px">Composing from the library...</div>';
+            panel.hidden = false;
+            panel.innerHTML = '';
+            overlay.classList.add('active');
+
+            try {
+                await loadIndex();
+                const seed = (window._nextSongSeed !== undefined)
+                    ? window._nextSongSeed
+                    : Math.floor(Math.random() * 1000000);
+                window._nextSongSeed = undefined;
+                const summary = songSource();
+                const lyrics = libraryLyrics(summary, seed);
+                // A model song takes tens of seconds, so the player says what it is
+                // waiting for instead of looking stuck on the old picture.
+                stage.innerHTML = '<div class="gen-canvas" style="display:flex;align-items:center;justify-content:center;text-align:center;color:#8b9aa0;font-size:13px;padding:20px"><div id="songStatus">Asking the song model...</div></div>';
+                // The model first: Cloudflare hosts it, so a real sung song needs
+                // no local machine. The browser synth stays as the fallback for
+                // when the route is not there (plain static hosting) or the model
+                // refuses the request.
+                const started = performance.now();
+                let modelError = null;
+                let model = null;
+                try {
+                    model = await requestModelSong(summary, lyrics, seed);
+                } catch (err) {
+                    modelError = err && err.message ? err.message : 'the song model is unavailable';
+                }
+
+                let url;
+                let bpm = libraryTempo(summary, seed);
+                let seconds = null;
+                let origin;
+                if (model) {
+                    url = model.audio;
+                    origin = 'MiniMax Music 2.6 on Cloudflare';
+                } else {
+                    const result = await renderLibrarySong(summary, seed);
+                    url = URL.createObjectURL(encodeWav(result.buffer));
+                    bpm = result.bpm;
+                    seconds = result.seconds;
+                    origin = 'the browser synthesiser';
+                }
+                const took = ((performance.now() - started) / 1000).toFixed(1);
+                const extension = model ? '.mp3' : '.wav';
+
+                const audio = document.createElement('audio');
+                audio.controls = true;
+                audio.autoplay = true;
+                audio.className = 'gen-audio';
+                audio.src = url;
+                stage.innerHTML = '';
+                stage.appendChild(audio);
+
+                const lyricsText = lyrics.map(part =>
+                    [part.section.toUpperCase()].concat(part.lines).join('\n')).join('\n\n');
+
+                panel.innerHTML = '';
+                const head = document.createElement('div');
+                head.className = 'gen-title';
+                head.textContent = `Song · ${summary.total.toLocaleString()} tracks · ${bpm} BPM${seconds ? ' · ' + Math.round(seconds) + 's' : ''} · seed ${seed}`;
+                const note = document.createElement('div');
+                note.textContent = (summary.genres.length
+                    ? `Built from ${summary.label}, shaped by what dominates it: ${summary.genres.map(genre => `${genre.name} (${genre.count})`).join(', ')}. `
+                    : `Built from ${summary.label}. `) +
+                    (model
+                        ? `Composed by ${origin} from the lyrics below; it took ${took}s and costs about $0.15 a track.`
+                        : `Rendered and mastered in ${took}s by ${origin}${modelError ? ' (model unavailable: ' + modelError + ')' : ''}.`);
+
+                const list = document.createElement('div');
+                list.className = 'gen-lyrics';
+                lyrics.forEach(part => {
+                    const heading = document.createElement('h4');
+                    heading.textContent = part.section;
+                    list.appendChild(heading);
+                    part.lines.forEach(text => {
+                        const paragraph = document.createElement('p');
+                        paragraph.textContent = text;
+                        list.appendChild(paragraph);
+                    });
+                });
+
+                const actions = document.createElement('div');
+                actions.className = 'gen-actions';
+                const saveAudio = document.createElement('a');
+                saveAudio.className = 'gen-open';
+                saveAudio.textContent = model ? 'Save the song' : 'Save the WAV';
+                saveAudio.href = url;
+                saveAudio.download = 'library-song' + extension;
+                const saveLyrics = document.createElement('a');
+                saveLyrics.className = 'gen-open';
+                saveLyrics.textContent = 'Save the lyrics';
+                saveLyrics.href = URL.createObjectURL(new Blob([lyricsText], { type: 'text/plain' }));
+                saveLyrics.download = 'library-song-lyrics.txt';
+                const again = document.createElement('button');
+                again.textContent = 'Compose again';
+                again.onclick = (clickEvent) => { clickEvent.stopPropagation(); startLibrarySong(); };
+                // The seed is the recipe: reusing it rebuilds this exact song.
+                const replay = document.createElement('button');
+                replay.textContent = 'Repeat this one';
+                replay.onclick = (clickEvent) => {
+                    clickEvent.stopPropagation();
+                    window._nextSongSeed = seed;
+                    startLibrarySong();
+                };
+                actions.append(saveAudio, saveLyrics, again, replay);
+
+                panel.append(head, note, list, actions);
+            } catch (err) {
+                panel.innerHTML = '';
+                const failure = document.createElement('div');
+                failure.textContent = 'Could not compose the song: ' + (err && err.message ? err.message : 'unknown error');
+                panel.appendChild(failure);
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = 'Library song'; }
+            }
+        }
+
+        function setPlayerTarget(url, title, description) {
+            let doc = (window._remixByUrl || {})[url] || null;
+            if (!doc) {
+                try {
+                    doc = buildRemix({ url: url, title: title, description: description });
+                } catch (err) {
+                    doc = null;
+                }
+            }
+            window._playerTarget = { url, doc };
+            const box = document.getElementById('playerGenerate');
+            const btn = document.getElementById('playerGenBtn');
+            if (box) {
+                box.hidden = true;
+                box.innerHTML = '';
+            }
+            // Offer Generate whenever there is a document to build from.
+            if (btn) btn.hidden = !doc;
+        }
+
+        function playEmbed(href) {
+            const video = document.getElementById('playerVideo');
+            if (!video) return;
+            video.innerHTML = `<iframe width="100%" height="100%" src="${escapeAttr(href)}" frameborder="0" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>`;
+        }
+
+        function generateRemixLink(event) {
+            if (event) event.stopPropagation();
+            // The piece is generated from the document, so any video with a
+            // listing can be built - it does not depend on the source host.
+            const target = window._playerTarget;
+            const box = document.getElementById('playerGenerate');
+            if (!target || !target.doc || !box) return;
+
+            // The piece is built here, inside the player: a canvas picture drawn
+            // from the card's palette and hook, recorded together with the
+            // synthesised track, then handed back as a real video element.
+            const doc = target.doc;
+            const stage = document.getElementById('playerVideo');
+            if (!stage) return;
+
+            stopRemixAudio();
+            if (window._remixStopVisuals) { window._remixStopVisuals(); window._remixStopVisuals = null; }
+            stage.innerHTML = '';
+
+            const canvas = document.createElement('canvas');
+            canvas.width = 960;
+            canvas.height = 540;
+            canvas.className = 'gen-canvas';
+            stage.appendChild(canvas);
+
+            const audio = startRemixAudio(doc, true);
+            const bpm = audio ? audio.bpm : remixTempo(doc);
+            window._remixStopVisuals = startRemixCanvas(canvas, doc, bpm);
+
+            box.innerHTML = '';
+            box.hidden = false;
+            const head = document.createElement('div');
+            head.className = 'gen-title';
+            head.textContent = `Building · ${bpm} BPM · ${doc.remix.key} · ${doc.genre || 'unclassified'}`;
+            const status = document.createElement('div');
+            status.textContent = 'Rendering the piece...';
+            box.append(head, status);
+
+            const seconds = Math.min(20, Math.max(8, audio ? audio.loopSeconds : 14));
+            const chunks = [];
+            let recorder = null;
+            let stream = null;
+            const mime = window.MediaRecorder
+                ? ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm']
+                    .find(type => MediaRecorder.isTypeSupported(type))
+                : null;
+            if (mime && canvas.captureStream) {
+                try {
+                    stream = canvas.captureStream(30);
+                    if (audio && audio.dest) audio.dest.stream.getAudioTracks().forEach(track => stream.addTrack(track));
+                    recorder = new MediaRecorder(stream, { mimeType: mime });
+                    recorder.ondataavailable = (eventData) => {
+                        if (eventData.data && eventData.data.size) chunks.push(eventData.data);
+                    };
+                    recorder.start();
+                } catch (err) {
+                    recorder = null;
+                }
+            }
+
+            const startedAt = Date.now();
+            const ticker = setInterval(() => {
+                const pct = Math.min(99, Math.round(((Date.now() - startedAt) / 1000 / seconds) * 100));
+                status.textContent = `Rendering the piece... ${pct}%`;
+            }, 250);
+
+            setTimeout(() => {
+                clearInterval(ticker);
+                const finish = (blob) => {
+                    stopRemixAudio();
+                    if (window._remixStopVisuals) { window._remixStopVisuals(); window._remixStopVisuals = null; }
+                    if (stream) stream.getTracks().forEach(track => track.stop());
+
+                    const video = document.createElement('video');
+                    video.controls = true;
+                    video.autoplay = true;
+                    video.loop = true;
+                    video.playsInline = true;
+                    video.className = 'gen-video';
+                    let savedUrl = null;
+                    if (blob) {
+                        savedUrl = URL.createObjectURL(blob);
+                        video.src = savedUrl;
+                        window._lastGenerated = { url: savedUrl, name: safeFileName(doc.remix.title) + '.webm' };
+                    }
+                    stage.innerHTML = '';
+                    stage.appendChild(video);
+
+                    // A MediaRecorder webm has no duration in its header, so the
+                    // browser reports Infinity and the seek bar is dead. Seeking
+                    // far forward once makes it measure the real length.
+                    video.addEventListener('loadedmetadata', () => {
+                        if (video.duration !== Infinity) return;
+                        video.currentTime = 1e6;
+                        const settle = () => {
+                            video.currentTime = 0;
+                            video.removeEventListener('timeupdate', settle);
+                        };
+                        video.addEventListener('timeupdate', settle);
+                    });
+
+                    box.innerHTML = '';
+                    const title = document.createElement('div');
+                    title.className = 'gen-title';
+                    title.textContent = blob ? 'Built in the player' : 'Live preview';
+                    const note = document.createElement('div');
+                    note.textContent = blob
+                        ? `A ${seconds.toFixed(0)}s piece at ${bpm} BPM in ${doc.remix.key}, recorded from the generated picture and track. Nothing was copied from the original video.`
+                        : 'This browser could not record the piece, so it played through live instead.';
+                    const actions = document.createElement('div');
+                    actions.className = 'gen-actions';
+                    if (savedUrl) {
+                        const save = document.createElement('a');
+                        save.className = 'gen-open';
+                        save.textContent = 'Save the video';
+                        save.href = savedUrl;
+                        save.download = window._lastGenerated.name;
+                        actions.appendChild(save);
+                    }
+                    const again = document.createElement('button');
+                    again.textContent = 'Build again';
+                    again.onclick = (clickEvent) => generateRemixLink(clickEvent);
+                    actions.appendChild(again);
+                    box.append(title, note, actions);
+                };
+
+                if (recorder && recorder.state !== 'inactive') {
+                    recorder.onstop = () => finish(chunks.length
+                        ? new Blob(chunks, { type: recorder.mimeType || 'video/webm' })
+                        : null);
+                    recorder.stop();
+                } else {
+                    finish(null);
+                }
+            }, seconds * 1000);
+        }
+
         function copyRemix(event, cardId) {
             event.stopPropagation();
             const doc = (window._remixDocs || {})[cardId];
@@ -1368,6 +2437,9 @@
             if (remixDoc) {
                 window._remixDocs = window._remixDocs || {};
                 window._remixDocs[cardId] = remixDoc;
+                // The player looks the plan up by URL, not by card.
+                window._remixByUrl = window._remixByUrl || {};
+                window._remixByUrl[result.url] = remixDoc;
             }
 
             card.innerHTML = `
@@ -1472,6 +2544,7 @@
             video.innerHTML = embed;
             titleEl.textContent = title;
             descEl.textContent = desc;
+            setPlayerTarget(url, title, desc);
             overlay.classList.add('active');
             playerOpenedAt = Date.now();
         }
@@ -1486,6 +2559,10 @@
             if (e && Date.now() - playerOpenedAt < 400) return;
             document.getElementById('playerOverlay').classList.remove('active');
             document.getElementById('playerVideo').innerHTML = '';
+            // A generated piece keeps its own track and animation running, so
+            // closing the player has to stop both.
+            stopRemixAudio();
+            if (window._remixStopVisuals) { window._remixStopVisuals(); window._remixStopVisuals = null; }
             playerOpenedAt = 0;
         }
 

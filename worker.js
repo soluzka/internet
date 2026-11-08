@@ -17,6 +17,11 @@
 const MAX_AUDIO_BYTES = 8 * 1024 * 1024;
 const WHISPER_MODEL = '@cf/openai/whisper';
 
+// Cloudflare hosts this model, so the website can make a real song with sung
+// vocals without any local machine or tunnel. Billed per track (~$0.15).
+const SONG_MODEL = 'minimax/music-2.6';
+const MAX_LYRICS = 3400;
+
 // Paths that belong to the download service rather than to assets.
 const DOWNLOAD_ROUTES = [
   /^\/api\/download(?:\/[a-z0-9]+)?$/i,
@@ -31,6 +36,14 @@ export default {
       return transcribe(request, env);
     }
 
+    if (url.pathname === '/api/song') {
+      return makeSong(request, env);
+    }
+
+    if (url.pathname === '/api/song-file') {
+      return songFile(request, env, url);
+    }
+
     if (DOWNLOAD_ROUTES.some((route) => route.test(url.pathname))) {
       return download(request, env, url);
     }
@@ -38,6 +51,84 @@ export default {
     return env.ASSETS.fetch(request);
   },
 };
+
+async function makeSong(request, env) {
+  if (request.method !== 'POST') {
+    return json({ error: 'Method not allowed' }, 405);
+  }
+  if (!env.AI) {
+    return json({ error: 'Workers AI is not bound to this Worker' }, 503);
+  }
+
+  const body = await request.json().catch(() => ({}));
+  const prompt = String(body.prompt || '').slice(0, 1900).trim();
+  const lyrics = String(body.lyrics || '').slice(0, MAX_LYRICS).trim();
+  if (!prompt) {
+    return json({ error: 'No prompt provided' }, 400);
+  }
+
+  const input = {
+    prompt,
+    is_instrumental: lyrics.length === 0,
+    lyrics_optimizer: lyrics.length === 0,
+    format: 'mp3',
+    sample_rate: 44100,
+  };
+  if (lyrics) input.lyrics = lyrics;
+
+  let result;
+  try {
+    result = await env.AI.run(SONG_MODEL, input);
+  } catch (err) {
+    return json({ error: 'The song model rejected the request: ' + (err.message || 'unknown') }, 502);
+  }
+
+  const audioUrl = result && result.result && result.result.audio
+    ? result.result.audio
+    : (result && result.audio) || null;
+  if (!audioUrl) {
+    return json({ error: 'The song model returned no audio' }, 502);
+  }
+
+  // The audio lives on the provider's storage; it is proxied so the page gets
+  // one same-origin file instead of a cross-origin link that may expire.
+  return json({
+    audio: '/api/song-file?u=' + encodeURIComponent(audioUrl),
+    model: SONG_MODEL,
+    instrumental: lyrics.length === 0,
+  });
+}
+
+async function songFile(request, env, url) {
+  const target = url.searchParams.get('u');
+  if (!target) {
+    return json({ error: 'No audio URL' }, 400);
+  }
+  let parsed;
+  try {
+    parsed = new URL(target);
+  } catch (err) {
+    return json({ error: 'Bad audio URL' }, 400);
+  }
+  // Only the model provider's own storage is fetched here, so this route cannot
+  // be turned into an open proxy.
+  const allowed = parsed.protocol === 'https:' && (
+    parsed.hostname.endsWith('.aliyuncs.com') ||
+    parsed.hostname === 'api.minimaxi.com'
+  );
+  if (!allowed) {
+    return json({ error: 'That host is not allowed' }, 400);
+  }
+
+  const upstream = await fetch(parsed.toString());
+  if (!upstream.ok) {
+    return json({ error: 'Could not fetch the generated audio (' + upstream.status + ')' }, 502);
+  }
+  const headers = new Headers();
+  headers.set('content-type', upstream.headers.get('content-type') || 'audio/mpeg');
+  headers.set('cache-control', 'no-store');
+  return new Response(upstream.body, { status: 200, headers });
+}
 
 async function download(request, env, url) {
   const base = String(env.DOWNLOAD_API || '').trim().replace(/\/+$/, '');

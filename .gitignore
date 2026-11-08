@@ -24,6 +24,13 @@ backups/
 # The backend's video index ships with the repo
 !data/video_index.db
 
+# Local model work: the ACE-Step checkout, its weights and its environment
+# are gigabytes of third-party material and must never be committed.
+third_party/
+song_service/.venv/
+song_service/models/
+song_service/logs/
+
 # Freebuff desktop metadata
 .freebuff/
 

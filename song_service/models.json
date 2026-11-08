@@ -1,0 +1,28 @@
+{
+  "//": "Model manifest for the local song service. install.py reads this file: it pip-installs each entry in 'packages' (a package manager, not a manual clone) and then fetches the weights named by 'repo' into 'target'. Nothing here runs in the browser or on Cloudflare.",
+  "python": ">=3.11",
+  "cuda": {
+    "runtime": "bundled in the torch wheel",
+    "index": "https://download.pytorch.org/whl/cu126",
+    "driver_min": "560.00",
+    "note": "No CUDA toolkit install is needed on Windows: the NVIDIA driver provides the runtime, and the torch wheel at this index carries its own CUDA libraries. PyPI's default 'torch' on Windows is CPU-only, which is why the index is declared per package instead of left to defaults."
+  },
+  "models": [
+    {
+      "name": "ACE-Step v1",
+      "kind": "music",
+      "vocals": true,
+      "license": "Apache-2.0",
+      "provider": "huggingface",
+      "repo": "ACE-Step/ACE-Step-v1-3.5B",
+      "target": "song_service/models/ACE-Step-v1-3.5B",
+      "size_gb": 7,
+      "packages": [
+        { "spec": "torch", "index": "https://download.pytorch.org/whl/cu126" },
+        { "spec": "torchaudio", "index": "https://download.pytorch.org/whl/cu126" },
+        { "spec": "git+https://github.com/ace-step/ACE-Step.git" }
+      ]
+    }
+  ],
+  "note": "A 3.5B text-to-music model with sung lyrics. On 8 GB of VRAM it runs with cpu_offload (ACE_CPU_OFFLOAD=1), which trades speed for fitting in memory."
+}
