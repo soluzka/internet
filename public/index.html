@@ -2664,11 +2664,15 @@
         async function postSong(base, payload) {
             let response;
             try {
+                // Queueing a job is normally instant, but a local model may still
+                // be starting: the desktop app launches the service and checks the
+                // install before it answers. Twenty seconds was cutting that off
+                // and quietly falling back to the instrument-only song.
                 response = await fetchBounded(base + '/api/song', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload),
-                }, 20000);
+                }, 120000);
             } catch (err) {
                 return null;
             }
