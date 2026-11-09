@@ -16,6 +16,7 @@ Jobs and finished files live in memory and in the temp dir. That is deliberate:
 one file, one reader, deleted as soon as it has been served.
 """
 
+import hashlib
 import os
 import re
 import shutil
@@ -25,7 +26,14 @@ import time
 import uuid
 from typing import Dict, Optional
 
-from flask import Flask, jsonify, request, send_file
+from urllib.parse import quote, urljoin, urlparse
+
+import requests
+try:
+    from curl_cffi import requests as cffi_requests
+except ImportError:  # optional: the proxy still works for hosts that allow it
+    cffi_requests = None
+from flask import Flask, Response, jsonify, request, send_file, stream_with_context
 from flask_cors import CORS
 from imageio_ffmpeg import get_ffmpeg_exe
 import yt_dlp
@@ -267,7 +275,9 @@ def api_discover():
         limit = int(data.get('limit') or 20)
     except (TypeError, ValueError):
         limit = 20
-    limit = max(1, min(30, limit))
+    # More than one page's worth, so a repeat search can show different videos
+    # instead of the same twenty.
+    limit = max(1, min(50, limit))
 
     options = {
         'quiet': True,
@@ -323,6 +333,204 @@ def _clock(seconds) -> str:
     if total <= 0:
         return 'Unknown'
     return '%d:%02d' % (total // 60, total % 60)
+
+
+# Files prepared for the in-page player, keyed by watch URL. A handful is enough:
+# the page plays one video at a time and a re-open should not download it twice.
+PLAY_CACHE = {}
+PLAY_MAX_FILES = 3
+PLAY_TTL_SECONDS = 900
+
+
+@app.route('/api/play')
+def api_play():
+    """The video itself, for a host whose CDN will not stream to the browser.
+
+    Neither TikTok's signed file URL nor Dailymotion's HLS playlist can be fetched
+    straight from the page: one is refused by the browser's opaque-response guard,
+    the other has no CORS headers, and the signed URL is refused even from here
+    when it is fetched cold. yt-dlp can download both, so the file is fetched once,
+    kept briefly, and served from this machine - a same-machine video element is
+    always allowed.
+    """
+    url = request.args.get('url', '').strip()
+    if not re.match(r'^https?://', url):
+        return jsonify({'error': 'That is not a video link'}), 400
+
+    key = hashlib.sha1(url.encode('utf-8')).hexdigest()
+    cached = PLAY_CACHE.get(key)
+    if cached and os.path.exists(cached['path']) and time.time() - cached['at'] < PLAY_TTL_SECONDS:
+        return send_file(cached['path'], conditional=True)
+
+    if cached:
+        PLAY_CACHE.pop(key, None)
+        shutil.rmtree(os.path.dirname(cached['path']), ignore_errors=True)
+
+    tmp_dir = tempfile.mkdtemp(prefix='play_')
+    options = {
+        'quiet': True,
+        'no_warnings': True,
+        'noplaylist': True,
+        'socket_timeout': 30,
+        # A preview for the player, not an archive copy: 480p starts far sooner.
+        'format': 'best[height<=480][ext=mp4]/best[height<=480]/best',
+        'outtmpl': os.path.join(tmp_dir, 'video.%(ext)s'),
+        'ffmpeg_location': os.path.dirname(get_ffmpeg_exe()),
+    }
+    cookies = _cookie_path()
+    if cookies:
+        options['cookiefile'] = cookies
+
+    try:
+        with yt_dlp.YoutubeDL(options) as ydl:
+            ydl.extract_info(url, download=True)
+    except Exception as exc:  # noqa: BLE001 - reported to the page as text
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return jsonify({'error': _friendly_error(str(exc), url)}), 502
+
+    files = [os.path.join(tmp_dir, name) for name in os.listdir(tmp_dir)]
+    files = [path for path in files if os.path.isfile(path) and os.path.getsize(path) > 0]
+    if not files:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return jsonify({'error': 'Nothing was downloaded for that video.'}), 404
+
+    while len(PLAY_CACHE) >= PLAY_MAX_FILES:
+        oldest_key = next(iter(PLAY_CACHE))
+        oldest = PLAY_CACHE.pop(oldest_key)
+        shutil.rmtree(os.path.dirname(oldest['path']), ignore_errors=True)
+
+    PLAY_CACHE[key] = {'path': files[0], 'at': time.time()}
+    return send_file(files[0], conditional=True)
+
+
+@app.route('/api/stream')
+def api_stream():
+    """Hands the browser a video file from an origin that refuses it.
+
+    TikTok's CDN and Dailymotion's CDN both refuse a direct request from the page
+    (Chrome blocks the first with ORB, the second has no CORS at all), but a video
+    element pointed at this service is same-machine and allowed. Range headers are
+    passed through so seeking works, and an HLS playlist is rewritten so its
+    segments come back through here as well.
+    """
+    target = request.args.get('url', '').strip()
+    if not re.match(r'^https?://', target):
+        return jsonify({'error': 'That is not a media link'}), 400
+
+    # The CDNs check where the request appears to come from, and refuse a bare
+    # client with 403 even for a signed URL. These are the same headers yt-dlp
+    # sends when it reads the page.
+    host = urlparse(target).netloc.lower()
+    referer = 'https://www.tiktok.com/'
+    if 'dailymotion' in host or 'dmcdn' in host:
+        referer = 'https://www.dailymotion.com/'
+    elif 'youtube' in host or 'googlevideo' in host:
+        referer = 'https://www.youtube.com/'
+    headers = {
+        'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                       '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'),
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': referer,
+        'Origin': referer.rstrip('/'),
+    }
+    if request.headers.get('Range'):
+        headers['Range'] = request.headers['Range']
+
+    # TikTok's CDN answers a plain client with 403 even for a signed URL: it
+    # fingerprints the TLS handshake. curl_cffi is already here for yt-dlp, and it
+    # is what makes the request look like the Chrome the link was made for.
+    if cffi_requests is not None:
+        upstream = cffi_requests.get(target, headers=headers, stream=True, timeout=40,
+                                     impersonate='chrome')
+    else:
+        upstream = requests.get(target, headers=headers, stream=True, timeout=40)
+
+    if '.m3u8' in target or 'mpegurl' in (upstream.headers.get('Content-Type') or ''):
+        body = upstream.text
+        base = target.rsplit('/', 1)[0] + '/'
+        proxy = request.host_url.rstrip('/') + '/api/stream?url='
+        out = []
+        for line in body.splitlines():
+            text = line.strip()
+            if not text:
+                continue
+            if text.startswith('#'):
+                # Key and init-segment URIs live inside tags.
+                out.append(re.sub(
+                    r'URI="([^"]+)"',
+                    lambda m: 'URI="%s%s"' % (proxy, quote(urljoin(base, m.group(1)), safe='')),
+                    text))
+            else:
+                out.append(proxy + quote(urljoin(base, text), safe=''))
+        response = Response('\n'.join(out), status=200)
+        response.headers['Content-Type'] = 'application/vnd.apple.mpegurl'
+        return response
+
+    def relay():
+        for chunk in upstream.iter_content(chunk_size=65536):
+            if chunk:
+                yield chunk
+
+    response = Response(stream_with_context(relay()), status=upstream.status_code)
+    for header in ('Content-Type', 'Content-Length', 'Content-Range', 'Accept-Ranges', 'ETag'):
+        if upstream.headers.get(header):
+            response.headers[header] = upstream.headers[header]
+    if 'Content-Type' not in response.headers:
+        response.headers['Content-Type'] = 'video/mp4'
+    response.headers['Accept-Ranges'] = response.headers.get('Accept-Ranges', 'bytes')
+    return response
+
+
+@app.route('/api/resolve', methods=['POST', 'OPTIONS'])
+def api_resolve():
+    """A direct stream URL for a video the page cannot embed.
+
+    Dailymotion answers its embed endpoint with "Forbidden" from this site and
+    TikTok's embed is black for most clips, so neither can be framed. yt-dlp here
+    can still read the media URL behind the watch page, and the browser plays it
+    directly - an mp4 as it is, an HLS playlist through hls.js.
+    """
+    if request.method == 'OPTIONS':
+        return ('', 204)
+
+    data = request.get_json(silent=True) or {}
+    url = (data.get('url') or '').strip()
+    if not url or not _is_supported_url(url):
+        return jsonify({'error': 'That is not a video link'}), 400
+
+    options = {
+        'quiet': True,
+        'no_warnings': True,
+        'skip_download': True,
+        'noplaylist': True,
+        'socket_timeout': 25,
+        'format': 'best[ext=mp4]/best',
+    }
+    cookies = _cookie_path()
+    if cookies:
+        options['cookiefile'] = cookies
+
+    try:
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(url, download=False) or {}
+    except Exception as exc:  # noqa: BLE001 - reported to the page as text
+        return jsonify({'error': _friendly_error(str(exc), url)}), 502
+
+    stream = str(info.get('url') or '')
+    if not stream:
+        requested = info.get('requested_formats') or []
+        if requested:
+            stream = str(requested[0].get('url') or '')
+    if not stream:
+        return jsonify({'error': 'No playable stream was found for that video.'}), 404
+
+    return jsonify({
+        'stream': stream,
+        'kind': 'hls' if '.m3u8' in stream else 'file',
+        'title': info.get('title') or '',
+        'duration': _clock(info.get('duration')),
+    })
 
 
 @app.route('/api/download', methods=['POST', 'OPTIONS'])

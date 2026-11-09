@@ -533,7 +533,44 @@
             border-radius: 16px;
             overflow: hidden;
         }
-        .player-video { width: 100%; aspect-ratio: 16/9; }
+        .player-video { width: 100%; aspect-ratio: 16/9; position: relative; background: #000; }
+        /* The player opens on a picture, not a promise: every card shows its own
+           thumbnail (or a plain panel) with a play button, so a source that will
+           not embed still leaves something to look at and a way through. */
+        .player-poster { position: absolute; inset: 0; display: flex; cursor: pointer; overflow: hidden; }
+        .player-poster img { width: 100%; height: 100%; object-fit: cover; }
+        .player-poster-shade {
+            position: absolute; inset: 0;
+            background: linear-gradient(180deg, rgba(0,0,0,0.1) 0%, rgba(0,0,0,0.75) 100%);
+        }
+        .player-poster-body { position: absolute; left: 18px; right: 90px; bottom: 16px; z-index: 2; }
+        .player-poster-title { font-size: 17px; font-weight: 600; color: #fff; }
+        .player-poster-desc { font-size: 13px; color: rgba(255,255,255,0.75); margin-top: 6px; }
+        .player-poster-play {
+            position: absolute; z-index: 3; left: 50%; top: 50%; transform: translate(-50%, -50%);
+            width: 76px; height: 76px; border-radius: 50%;
+            border: 2px solid rgba(255,255,255,0.85);
+            background: rgba(0,0,0,0.45); color: #fff; font-size: 26px; line-height: 1;
+            cursor: pointer; display: flex; align-items: center; justify-content: center;
+        }
+        .player-poster-play:hover { background: rgba(0,0,0,0.7); }
+        .player-poster-open {
+            position: absolute; z-index: 3; left: 50%; bottom: 18px; transform: translateX(-50%);
+            background: rgba(255,255,255,0.14); color: #fff;
+            border: 1px solid rgba(255,255,255,0.45); border-radius: 999px;
+            padding: 8px 16px; font-size: 12px; font-weight: 600; cursor: pointer;
+        }
+        .player-poster-open:hover { background: rgba(255,255,255,0.26); }
+        .player-preparing {
+            position: absolute; z-index: 3; left: 50%; top: calc(50% + 58px); transform: translateX(-50%);
+            color: #fff; font-size: 12px; background: rgba(0,0,0,0.55);
+            padding: 6px 12px; border-radius: 999px; white-space: nowrap;
+        }
+        .player-embed-back {
+            position: absolute; right: 12px; bottom: 12px; z-index: 4;
+            background: rgba(0,0,0,0.6); color: #fff; border: 1px solid rgba(255,255,255,0.3);
+            border-radius: 999px; padding: 6px 12px; font-size: 12px; cursor: pointer;
+        }
         .player-content { display: flex; flex-direction: column; max-height: 92vh; overflow: auto; }
         .player-info { padding: 16px; }
         .player-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
@@ -641,6 +678,7 @@
         .player-generate button:hover, .player-generate a.gen-open:hover { border-color: var(--accent2); }
         .player-close {
             position: absolute;
+            z-index: 30;
             top: 20px;
             right: 20px;
             background: var(--surface);
@@ -831,6 +869,10 @@
     <!-- Vendored (Socket.IO 4.7.5) instead of a CDN link: the page then has no
          third-party script to fetch at runtime, and works on any host. -->
     <script src="vendor/socket.io.min.js"></script>
+    <!-- HLS playback: Dailymotion only offers an .m3u8, which Chrome does not play
+         on its own. Vendored, like the page's other scripts, so nothing third-party
+         is fetched at runtime. -->
+    <script src="vendor/hls.min.js"></script>
     <script>
         // Detect if Socket.IO is available (works locally, falls back on Vercel)
         let socket = null;
@@ -897,38 +939,79 @@
         // search listing and hands what it finds to the Worker to be stored. With
         // no service running the connection is refused in milliseconds and the
         // database search carries on exactly as before.
+        // Links already put on screen this session. A second search for the same
+        // words is a request for the next page of the world, not a reprint of the
+        // one before it, so what has been seen is skipped and the list moves on.
+        const seenLinks = new Set();
+
+        function clockSeconds(value) {
+            const total = Number(value) || 0;
+            if (total <= 0) return 'Unknown';
+            return Math.floor(total / 60) + ':' + String(total % 60).padStart(2, '0');
+        }
+
         async function localDiscover(query) {
+            const videos = [];
+            const keys = new Set();
+            const add = list => (list || []).forEach(video => {
+                const key = String((video && video.url) || '').toLowerCase();
+                if (!key || keys.has(key)) return;
+                keys.add(key);
+                videos.push(video);
+            });
+
+            // This machine's yt-dlp reaches YouTube; a Worker cannot.
             try {
                 const listing = await fetchBounded('http://127.0.0.1:8080/api/discover', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ query: query, limit: 20 }),
+                    body: JSON.stringify({ query: query, limit: 40 }),
                 }, 30000);
-                if (!listing.ok) return { added: 0, videos: [] };
-                const found = await listing.json();
-                if (!found || !Array.isArray(found.videos) || !found.videos.length) {
-                    return { added: 0, videos: [] };
+                if (listing.ok) {
+                    const found = await listing.json();
+                    add(found && found.videos);
                 }
+            } catch (err) { /* no downloader running: the rest still answers */ }
 
-                // The listing is shown whether or not it could be stored: the
-                // database may be unable to accept writes at this moment, and a
-                // video that was found is worth showing anyway.
-                let added = 0;
-                try {
-                    const stored = await fetchBounded('api/ingest', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ videos: found.videos }),
-                    }, 15000);
-                    if (stored.ok) {
-                        const result = await stored.json();
-                        added = Number(result && result.added) || 0;
-                    }
-                } catch (err) { /* shown now, stored when the database allows */ }
-                return { added: added, videos: found.videos };
-            } catch (err) {
-                return { added: 0, videos: [] };
-            }
+            // Dailymotion's public API allows the browser itself, so the library
+            // keeps growing even with no local service at all.
+            try {
+                const api = 'https://api.dailymotion.com/videos'
+                    + '?search=' + encodeURIComponent(query)
+                    + '&fields=id,title,url,description,thumbnail_360_url,duration'
+                    + '&sort=relevance&limit=40';
+                const response = await fetchBounded(api, {}, 12000);
+                if (response.ok) {
+                    const doc = await response.json();
+                    add((doc && doc.list || []).map(row => ({
+                        url: row.url,
+                        title: row.title,
+                        description: row.description || '',
+                        thumbnail: row.thumbnail_360_url || '',
+                        duration: clockSeconds(row.duration),
+                        source: 'Dailymotion',
+                    })));
+                }
+            } catch (err) { /* a blocked source must not stop the search */ }
+
+            if (!videos.length) return { added: 0, videos: [] };
+
+            // The listing is shown whether or not it could be stored: the database
+            // may be refusing writes right now, and a video that was found is worth
+            // showing anyway. It is stored the next time the database accepts it.
+            let added = 0;
+            try {
+                const stored = await fetchBounded('api/ingest', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ videos: videos }),
+                }, 15000);
+                if (stored.ok) {
+                    const result = await stored.json();
+                    added = Number(result && result.added) || 0;
+                }
+            } catch (err) { /* shown now, stored when the database allows */ }
+            return { added: added, videos: videos };
         }
 
         // Search the index where it lives. The Worker answers with the shape the
@@ -1292,6 +1375,17 @@
                     aiStatus.innerHTML = renderSummary(query, found.total, indexStats ? indexStats.total_videos : 0, extras);
                     if (indexStats) updateStats(indexStats);
 
+                    // Fresh first: whatever this session has not shown yet goes to
+                    // the top, so pressing Search again reads as a next page rather
+                    // than a reprint of the one before it. Nothing is dropped - the
+                    // older matches stay below.
+                    results.sort((a, b) => Number(seenLinks.has(String(a.url || '').toLowerCase()))
+                        - Number(seenLinks.has(String(b.url || '').toLowerCase())));
+                    results.forEach(row => {
+                        const key = String(row.url || '').toLowerCase();
+                        if (key) seenLinks.add(key);
+                    });
+
                     // Remove empty state and show results
                     const empty = document.getElementById('emptyState');
                     if (empty) empty.remove();
@@ -1361,8 +1455,9 @@
             const fresh = [];
             extra.forEach(video => {
                 const key = String((video && video.url) || '').toLowerCase();
-                if (!key || known.has(key)) return;
+                if (!key || known.has(key) || seenLinks.has(key)) return;
                 known.add(key);
+                seenLinks.add(key);
                 fresh.push({
                     url: video.url,
                     title: video.title,
@@ -3668,12 +3763,12 @@
             }
 
             card.innerHTML = `
-                <div class="thumb-wrapper" onclick="openPlayer('${escapeAttr(result.url)}', '${escapeAttr(result.title)}', '${escapeAttr(result.description || '')}')">
+                <div class="thumb-wrapper" onclick="openPlayer('${escapeAttr(result.url)}', '${escapeAttr(result.title)}', '${escapeAttr(result.description || '')}', '${escapeAttr(result.thumbnail || '')}')">
                     ${thumbHtml}
                     <div class="source-badge ${result.source || 'Unknown'}">${escapeHtml(result.source || 'Unknown')}</div>
                     ${durationHtml}
                 </div>
-                <div class="card-body" onclick="openPlayer('${escapeAttr(result.url)}', '${escapeAttr(result.title)}', '${escapeAttr(result.description || '')}')">
+                <div class="card-body" onclick="openPlayer('${escapeAttr(result.url)}', '${escapeAttr(result.title)}', '${escapeAttr(result.description || '')}', '${escapeAttr(result.thumbnail || '')}')">
                     <div class="card-title">${escapeHtml(result.title)}</div>
                     <div class="card-desc">${escapeHtml(result.description || '')}</div>
                     ${genreHtml}
@@ -3719,14 +3814,18 @@
         // Open a source site the same way a normal link does. window.open is
         // unreliable here: some shells hand back a handle and then drop the
         // window, which looks like the link doing nothing.
+        // A new tab, and only a new tab. A blocked popup used to fall back to
+        // navigating this page, which threw the whole search away and, for a host
+        // that refuses this network, left a dead "Access Denied" page with no way
+        // back. If the tab cannot be opened, the address is shown to copy instead.
         function openSource(url) {
-            const link = document.createElement('a');
-            link.href = url;
-            link.target = '_blank';
-            link.rel = 'noopener noreferrer';
-            document.body.appendChild(link);
-            link.click();
-            link.remove();
+            let opened = null;
+            try {
+                opened = window.open(url, '_blank', 'noopener,noreferrer');
+            } catch (err) { /* treated as blocked below */ }
+            if (!opened) {
+                showToast('info', 'The browser blocked the new tab', url);
+            }
         }
 
         // --- Video Player ---
@@ -3755,29 +3854,68 @@
                 .catch(() => { /* a click that cannot be recorded must not block the player */ });
         }
 
-        function openPlayer(url, title, desc) {
+        // What can be played inside the page for a given link. A host with a
+        // documented embed gets one; a direct media file is played as a video
+        // element. Anything else is still opened in the player, just as a poster
+        // with a link out - never as an empty frame and never by throwing the
+        // person straight at another site without showing them the video first.
+        // Dailymotion refuses its embed endpoint from this site - "Forbidden",
+        // whatever referrer is sent - and TikTok's embed shows a black frame for
+        // most clips. Pretending otherwise put a black rectangle where a video
+        // should be, so those two play on their own site and the player shows the
+        // card's picture instead of a frame that cannot work.
+        function embedTarget(url) {
+            const link = String(url || '');
+            let match;
+            if ((match = link.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([A-Za-z0-9_-]{11})/))) {
+                return { src: 'https://www.youtube.com/embed/' + match[1] };
+            }
+            if ((match = link.match(/vimeo\.com\/(\d+)/))) {
+                return { src: 'https://player.vimeo.com/video/' + match[1] };
+            }
+            if ((match = link.match(/archive\.org\/details\/([^/?#]+)/))) {
+                return { src: 'https://archive.org/embed/' + match[1] };
+            }
+            if ((match = link.match(/\.(mp4|webm|ogg|m4v)(\?|#|$)/i))) {
+                return { video: link };
+            }
+            return null;
+        }
+
+        // The picture on the player before anything loads: the card's own
+        // thumbnail, or a plain panel when the index has none.
+        function playerPoster(title, desc, thumbnail, target, url) {
+            const image = thumbnail
+                ? `<img src="${thumbnail.replace(/"/g, '&quot;')}" alt="" onerror="this.style.display='none'" />`
+                : '';
+            let host = '';
+            try { host = new URL(url).hostname.replace(/^www\./, ''); } catch (err) {}
+            // Both kinds of source play here now: the embeddable ones in a frame,
+            // the rest from a stream this machine resolves. Opening the site is a
+            // separate, clearly labelled button rather than the default.
+            const action = 'Play here';
+            return `<div class="player-poster">
+                ${image}
+                <div class="player-poster-shade"></div>
+                <div class="player-poster-body">
+                    <div class="player-poster-title">${(title || 'Video').replace(/</g, '&lt;')}</div>
+                    <div class="player-poster-desc">${(desc || '').replace(/</g, '&lt;').slice(0, 160)}</div>
+                </div>
+                <button type="button" class="player-poster-play" data-play="1" title="${action}" aria-label="${action}">
+                    <span>&#9654;</span>
+                </button>
+                <button type="button" class="player-poster-open" data-open="1">${action}</button>
+            </div>`;
+        }
+
+        function openPlayer(url, title, desc, thumbnail) {
             recordClick(url, title);
             const overlay = document.getElementById('playerOverlay');
             const video = document.getElementById('playerVideo');
             const titleEl = document.getElementById('playerTitle');
             const descEl = document.getElementById('playerDesc');
 
-            let embed = '';
-            if (url.includes('youtube.com/watch?v=') || url.includes('youtu.be/')) {
-                const vid = url.match(/(?:watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
-                if (vid) embed = `<iframe width="100%" height="100%" src="https://www.youtube.com/embed/${vid[1]}" frameborder="0" allowfullscreen></iframe>`;
-            } else if (url.includes('dailymotion.com/video/') || url.includes('dai.ly/')) {
-                const vid = url.match(/(?:video\/|dai\.ly\/)([a-zA-Z0-9]+)/);
-                if (vid) embed = `<iframe width="100%" height="100%" src="https://www.dailymotion.com/embed/video/${vid[1]}" frameborder="0" allowfullscreen></iframe>`;
-            } else if (url.includes('vimeo.com/')) {
-                const vid = url.match(/vimeo\.com\/(\d+)/);
-                if (vid) embed = `<iframe width="100%" height="100%" src="https://player.vimeo.com/video/${vid[1]}" frameborder="0" allowfullscreen></iframe>`;
-            } else {
-                // Nothing we can embed: send the user to the source page rather
-                // than showing an empty player they cannot use.
-                openSource(url);
-                return;
-            }
+            const target = embedTarget(url);
 
             // Always offer a way out: embeds get blocked by X-Frame-Options,
             // region locks and privacy settings, and an empty frame is a dead end.
@@ -3792,7 +3930,85 @@
                 if (openText) openText.textContent = 'Open on ' + sourceHost;
             }
 
-            video.innerHTML = embed;
+            video.innerHTML = playerPoster(title, desc, thumbnail || '', target, url);
+            const poster = video.querySelector('.player-poster');
+            const mountPlayer = () => {
+                // The frame replaces the poster only once asked for: a host that
+                // refuses embedding then costs the person a poster, not a blank
+                // rectangle where the video should be.
+                if (poster) poster.style.display = 'none';
+                if (target) {
+                    video.innerHTML = target.video
+                        ? `<video src="${target.video.replace(/"/g, '&quot;')}" controls autoplay playsinline style="width:100%;height:100%"></video>`
+                        : `<iframe width="100%" height="100%" src="${target.src}" frameborder="0"
+                            allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+                            allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>`;
+                }
+                // Keep a way out visible even after the embed takes the frame.
+                const back = document.createElement('button');
+                back.type = 'button';
+                back.className = 'player-embed-back';
+                back.textContent = 'Back to the picture';
+                back.addEventListener('click', () => openPlayer(url, title, desc, thumbnail));
+                video.appendChild(back);
+            };
+
+            // Plays the file this machine prepared. If it cannot be fetched, the
+            // picture stays and says so, rather than leaving a black rectangle.
+            const playStream = (stream) => {
+                if (poster) poster.style.display = 'none';
+                video.innerHTML = '<video controls autoplay playsinline style="width:100%;height:100%;background:#000"></video>';
+                const player = video.querySelector('video');
+                const back = document.createElement('button');
+                back.type = 'button';
+                back.className = 'player-embed-back';
+                back.textContent = 'Back to the picture';
+                back.addEventListener('click', () => openPlayer(url, title, desc, thumbnail));
+                video.appendChild(back);
+
+                player.addEventListener('error', () => {
+                    openPlayer(url, title, desc, thumbnail);
+                    showToast('error', 'The video would not play here', 'It is on the source site - use "Open" on the card.');
+                });
+
+                player.src = stream.src;
+            };
+
+            const startPlayback = async () => {
+                if (target) {
+                    mountPlayer();
+                    return;
+                }
+                // No embed for this host. The downloader on this PC fetches the
+                // file and serves it, which is what makes a TikTok or a Dailymotion
+                // card play here at all.
+                const button = video.querySelector('.player-poster-play');
+                if (button) button.textContent = '…';
+                // This machine has to fetch the file before the browser can play it,
+                // so say that instead of leaving a still picture that looks stuck.
+                if (poster && !poster.querySelector('.player-preparing')) {
+                    const note = document.createElement('div');
+                    note.className = 'player-preparing';
+                    note.textContent = 'Preparing the video… a long one takes a minute';
+                    poster.appendChild(note);
+                }
+                const src = 'http://127.0.0.1:8080/api/play?url=' + encodeURIComponent(url);
+                playStream({ src: src });
+            };
+            const playButton = video.querySelector('.player-poster-play');
+            if (playButton) playButton.addEventListener('click', startPlayback);
+            const openButton = video.querySelector('.player-poster-open');
+            if (openButton) openButton.addEventListener('click', event => {
+                event.stopPropagation();
+                openSource(url);
+            });
+            // Clicking the picture plays it. It never leaves the page: the only
+            // things that open the source site are the buttons that say so.
+            if (poster) poster.addEventListener('click', event => {
+                if (event.target.closest('button')) return;
+                startPlayback();
+            });
+
             titleEl.textContent = title;
             descEl.textContent = desc;
             setPlayerTarget(url, title, desc);
