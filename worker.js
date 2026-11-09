@@ -461,7 +461,7 @@ function formatSeconds(value) {
 
 async function syncSession(env, request, url) {
   if (request.method === 'OPTIONS') return new Response(null, { status: 204 });
-  if (!env.DB) return json({ error: 'No video index is attached to this Worker.' }, 501);
+  if (!env.DB && !env.STATS) return json({ error: 'No video index is attached to this Worker.' }, 501);
 
   // Codes are shown to people, so they stay short and typable: letters, digits
   // and dashes only.
@@ -472,6 +472,17 @@ async function syncSession(env, request, url) {
   if (code.length < 4) return json({ error: 'A sync code is needed.' }, 400);
 
   if (request.method === 'GET') {
+    // KV first: it answers while D1 is over its daily allowance, which is exactly
+    // when a saved search is worth having.
+    if (env.STATS) {
+      try {
+        const text = await env.STATS.get('sync:' + code);
+        if (text) {
+          const doc = JSON.parse(text);
+          return json({ code, payload: doc.payload || null, updated_at: Number(doc.at) || 0 });
+        }
+      } catch (err) { /* fall back to the database copy */ }
+    }
     try {
       // Newest save wins. Saves are appended rather than overwritten, because
       // updating a row in place makes D1 read it first - and a database that is
@@ -503,13 +514,25 @@ async function syncSession(env, request, url) {
     const body = await request.json().catch(() => null);
     const payload = body && typeof body.payload === 'string' ? body.payload : '';
     if (!payload) return json({ error: 'There was nothing to save.' }, 400);
+
+    // One write, no read, nothing for the database's daily limit to refuse.
+    if (env.STATS) {
+      try {
+        await env.STATS.put('sync:' + code, JSON.stringify({
+          payload: payload.slice(0, 200000),
+          at: Date.now(),
+        }));
+        return json({ ok: true, code, stored: 'kv' });
+      } catch (err) { /* try the database instead */ }
+    }
+
     try {
       await env.DB.prepare(
         'INSERT INTO sync_saves (code, payload, updated_at) VALUES (?, ?, ?)'
       ).bind(code, payload.slice(0, 200000), Date.now()).run();
-      return json({ ok: true, code });
+      return json({ ok: true, code, stored: 'db' });
     } catch (err) {
-      // Nothing was appended: the page keeps the search and can try again.
+      // Nothing was stored anywhere: the page keeps the search and tries again.
       return json({
         error: 'The search could not be saved to the server.',
         detail: String((err && err.message) || err).slice(0, 200),
