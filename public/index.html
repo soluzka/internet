@@ -907,6 +907,25 @@
         let videoIndex = null;
         let indexStats = null;
         let indexRequest = null;
+        // True once the counters have come from the server. The bundled snapshot is
+        // only a fallback, and its numbers are as old as the last export: once real
+        // numbers are on screen, the snapshot must never replace them.
+        let liveStats = false;
+
+        function applyLibraryStats(library) {
+            if (!library) return false;
+            const videos = Number(library.total_videos) || 0;
+            if (!videos) return false;
+            indexStats = {
+                total_videos: videos,
+                total_searches: Number(library.total_searches) || (indexStats ? indexStats.total_searches : 0),
+                total_clicks: Number(library.total_clicks) || (indexStats ? indexStats.total_clicks : 0),
+            };
+            liveStats = true;
+            try { statsFromSession = false; } catch (err) { /* declared later */ }
+            updateStats(indexStats);
+            return true;
+        }
 
         function loadIndex() {
             if (!indexRequest) {
@@ -917,11 +936,16 @@
                     })
                     .then(data => {
                         videoIndex = data.videos || [];
-                        indexStats = {
-                            total_videos: data.count || videoIndex.length,
-                            total_searches: data.searches || 0,
-                            total_clicks: data.clicks || 0,
-                        };
+                        // Loaded for searching when the server cannot answer, but
+                        // its counters are the export's age. If the server has
+                        // already given real ones, they stay.
+                        if (!liveStats) {
+                            indexStats = {
+                                total_videos: data.count || videoIndex.length,
+                                total_searches: data.searches || 0,
+                                total_clicks: data.clicks || 0,
+                            };
+                        }
                         return videoIndex;
                     })
                     .catch(err => {
@@ -1053,8 +1077,13 @@
                 + '&limit=' + limit + '&offset=' + offset
                 + (log ? '&discover=1&log=1' : '');
             const response = await fetchBounded(url, {}, 15000);
+            const doc = await response.json().catch(() => null);
+            // A failed search still answers with the counters. Taking them keeps the
+            // numbers right and stops the fallback below from replacing them with
+            // the bundled snapshot's - which is where "8,000 and then back" came
+            // from: one failed search put the old total on screen.
+            applyLibraryStats(doc && doc.library);
             if (!response.ok) throw new Error('search unavailable (' + response.status + ')');
-            const doc = await response.json();
             if (!doc || !Array.isArray(doc.videos)) throw new Error('search returned an unexpected shape');
             const total = Number(doc.total) || 0;
             // The database answers in the same compact keys the JSON index uses
@@ -4063,15 +4092,7 @@
             flushingClicks = false;
             // The stored clicks are the database's business: show its numbers, not
             // a running guess made in this browser.
-            if (latest) {
-                indexStats = {
-                    total_videos: Number(latest.total_videos) || (indexStats ? indexStats.total_videos : 0),
-                    total_searches: Number(latest.total_searches) || (indexStats ? indexStats.total_searches : 0),
-                    total_clicks: Number(latest.total_clicks) || 0,
-                };
-                statsFromSession = false;
-                updateStats(indexStats);
-            }
+            if (latest) applyLibraryStats(latest);
             if (!remaining.length) {
                 const queued = readClickQueue().length;
                 if (!queued) showToast('info', 'Clicks saved', 'The clicks made while the database was unavailable are now recorded.');
@@ -4368,15 +4389,6 @@
                     // The database's own numbers win whenever it can supply them; a
                     // zero here means it could not be read, not that it is empty.
                     if (!doc.library) return;
-                    const library = doc.library;
-                    const next = {
-                        total_videos: Number(library.total_videos) || (indexStats ? indexStats.total_videos : 0),
-                        total_searches: Number(library.total_searches) || (indexStats ? indexStats.total_searches : 0),
-                        total_clicks: Number(library.total_clicks) || (indexStats ? indexStats.total_clicks : 0),
-                    };
-                    indexStats = next;
-                    statsFromSession = false;
-                    updateStats(indexStats);
                 })
                 .catch(() => queueClick(entry));
         }
@@ -5252,19 +5264,13 @@
             let fromDatabase = false;
             try {
                 const response = await fetchBounded('api/search?q=', {}, 8000);
-                if (response.ok) {
-                    const doc = await response.json();
-                    if (doc && doc.library && Number(doc.library.total_videos) > 0) {
-                        indexStats = {
-                            total_videos: Number(doc.library.total_videos) || 0,
-                            total_searches: Number(doc.library.total_searches) || 0,
-                            total_clicks: Number(doc.library.total_clicks) || 0,
-                        };
-                        updateStats(indexStats);
-                        fromDatabase = true;
-                        // The database answers again: send anything that piled up.
-                        flushClicks();
-                    }
+                // The counters come back even when the search itself failed, so the
+                // body is read either way. A refused search is not "no counters".
+                const doc = await response.json().catch(() => null);
+                if (applyLibraryStats(doc && doc.library)) {
+                    fromDatabase = true;
+                    // The counters answer: send anything that piled up.
+                    flushClicks();
                 }
             } catch (err) { /* fall through to the bundled index */ }
 
