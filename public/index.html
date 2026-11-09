@@ -4025,6 +4025,10 @@
             return code;
         }
 
+        // True once a saved search has supplied the counters, so the later
+        // snapshot load cannot overwrite them with its own numbers.
+        let statsFromSession = false;
+
         function sessionPayload(query, found) {
             const rows = (found.results || []).slice(0, 300).map(row => ({
                 url: row.url,
@@ -4062,8 +4066,9 @@
             if (!saved || !saved.query || !Array.isArray(saved.results)) return false;
             currentQuery = saved.query;
             searchInput.value = saved.query;
-            if (saved.stats && saved.stats.total_videos) {
+            if (saved.stats && (saved.stats.total_videos || saved.stats.total_searches || saved.stats.total_clicks)) {
                 indexStats = saved.stats;
+                statsFromSession = true;
                 updateStats(indexStats);
             }
             const empty = document.getElementById('emptyState');
@@ -4103,7 +4108,9 @@
             const current = syncCode();
             const entered = window.prompt(
                 'Your sync code is ' + current + '\n\n'
-                + 'Type it on another device to open the same saved search there.\n'
+                + 'It carries the saved search and the counters that go with it:\n'
+                + 'library videos, searches run and clicks recorded.\n\n'
+                + 'Type it on another device to open them there.\n'
                 + 'To follow another device instead, type its code below.',
                 current
             );
@@ -5067,7 +5074,9 @@
                 }
             } catch (err) { /* fall through to the bundled index */ }
 
-            if (!fromDatabase) {
+            // A restored search already brought its counters with it; the snapshot
+            // must not replace them.
+            if (!fromDatabase && !statsFromSession) {
                 loadIndex()
                     .then(() => updateStats(indexStats))
                     .catch(() => {});
