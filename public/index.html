@@ -3945,9 +3945,12 @@
         function embedTarget(url) {
             const link = String(url || '');
             let match;
-            if ((match = link.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([A-Za-z0-9_-]{11})/))) {
+            if ((match = link.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([A-Za-z0-9_-]{11})/))) {
                 return { src: 'https://www.youtube.com/embed/' + match[1] };
             }
+            // A playlist is deliberately not framed: YouTube's series embed loads
+            // a black box here, while a single video plays. Playlists are resolved
+            // to their first video instead, which is handled before this call.
             if ((match = link.match(/vimeo\.com\/(\d+)/))) {
                 return { src: 'https://player.vimeo.com/video/' + match[1] };
             }
@@ -3987,8 +3990,43 @@
             </div>`;
         }
 
+        // The first playable video inside a playlist, read by this machine's
+        // yt-dlp. Playlist pages carry no media of their own, so without this a
+        // playlist card could only show a picture.
+        async function firstVideoOfPlaylist(url) {
+            try {
+                const response = await fetchBounded('http://127.0.0.1:8080/api/top', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: url, limit: 1 }),
+                }, 60000);
+                if (!response.ok) return null;
+                const doc = await response.json();
+                const first = doc && Array.isArray(doc.videos) ? doc.videos[0] : null;
+                return first && first.url ? first : null;
+            } catch (err) {
+                return null;
+            }
+        }
+
+        // One player at a time. Opening a second video while the first is still
+        // downloading used to leave two fetches in flight, and when the slower one
+        // finished it replaced the screen the person was looking at - which reads
+        // as "some videos just don't play". Every open takes a new number, and a
+        // reply that belongs to an older number is dropped.
+        let playerGeneration = 0;
+        let playerFetch = null;
+
         function openPlayer(url, title, desc, thumbnail) {
             recordClick(url, title);
+            // Opening another video replaces whatever was playing.
+            stopPlayerMedia();
+            playerGeneration += 1;
+            const generation = playerGeneration;
+            if (playerFetch) {
+                try { playerFetch.abort(); } catch (err) { /* already done */ }
+            }
+            playerFetch = new AbortController();
             const overlay = document.getElementById('playerOverlay');
             const video = document.getElementById('playerVideo');
             const titleEl = document.getElementById('playerTitle');
@@ -4066,13 +4104,17 @@
                 });
 
                 try {
-                    const response = await fetch(stream.src);
+                    const response = await fetch(stream.src, { signal: playerFetch.signal });
                     if (!response.ok) throw new Error('status ' + response.status);
                     const blob = await response.blob();
+                    // A player that was replaced while this was downloading is not
+                    // the one on screen any more.
+                    if (generation !== playerGeneration) return;
                     player.src = URL.createObjectURL(blob);
                     const note = video.querySelector('.player-preparing');
                     if (note) note.remove();
                 } catch (err) {
+                    if (generation !== playerGeneration) return;
                     openPlayer(url, title, desc, thumbnail);
                     showToast('error', 'The video would not play here',
                         'It is on the source site - use "Open" on the card.');
@@ -4081,13 +4123,33 @@
             };
 
             const startPlayback = async () => {
+                // A playlist card has no video of its own, and YouTube's playlist
+                // frame is black here. Its first video is looked up on this machine
+                // and played, so the card does something instead of nothing.
+                if (/[?&]list=/i.test(url) && !/watch\?v=|youtu\.be\/|shorts\//i.test(url)) {
+                    const button = video.querySelector('.player-poster-play');
+                    if (button) button.textContent = '…';
+                    const first = await firstVideoOfPlaylist(url);
+                    if (!first) {
+                        if (button) button.innerHTML = '&#9654;';
+                        showToast('error', 'That playlist gave nothing to play',
+                            'It may be private, empty, or a channel page rather than a playlist.');
+                        return;
+                    }
+                    openPlayer(first.url, first.title || title, desc, first.thumbnail || thumbnail);
+                    const play = document.querySelector('.player-poster-play');
+                    if (play) play.click();
+                    return;
+                }
+
+                // YouTube plays in its own frame - the one embed that works here.
+                // Everything else is fetched by the downloader on this PC.
                 if (target) {
                     mountPlayer();
                     return;
                 }
-                // No embed for this host. The downloader on this PC fetches the
-                // file and serves it, which is what makes a TikTok or a Dailymotion
-                // card play here at all.
+                // The downloader on this PC fetches the file and serves it, which is
+                // what makes a TikTok or a Dailymotion card play here at all.
                 const button = video.querySelector('.player-poster-play');
                 if (button) button.textContent = '…';
                 const src = 'http://127.0.0.1:8080/api/play?url=' + encodeURIComponent(url);
@@ -4119,9 +4181,28 @@
         // backdrop clicks for a moment after opening; × and Escape still close.
         let playerOpenedAt = 0;
 
+        // Closing has to silence the video, not just hide it. Removing the element
+        // normally does that, but a media element that is still buffering can keep
+        // its audio going, and an iframe keeps its own player running, so both are
+        // stopped explicitly first.
+        function stopPlayerMedia() {
+            const stage = document.getElementById('playerVideo');
+            if (!stage) return;
+            stage.querySelectorAll('video, audio').forEach(el => {
+                try {
+                    el.pause();
+                    if (el.src && el.src.startsWith('blob:')) URL.revokeObjectURL(el.src);
+                    el.removeAttribute('src');
+                    el.load();
+                } catch (err) { /* already gone */ }
+            });
+            stage.querySelectorAll('iframe').forEach(el => { el.src = 'about:blank'; });
+        }
+
         function closePlayer(e) {
             if (e && e.target.closest('.player-content')) return;
             if (e && Date.now() - playerOpenedAt < 400) return;
+            stopPlayerMedia();
             document.getElementById('playerOverlay').classList.remove('active');
             document.getElementById('playerVideo').innerHTML = '';
             // A generated piece keeps its own track and animation running, so

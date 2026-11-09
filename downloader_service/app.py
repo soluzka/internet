@@ -433,7 +433,9 @@ def api_play():
     options = {
         'quiet': True,
         'no_warnings': True,
-        'noplaylist': True,
+        # A playlist link is played as its first video rather than refused: the
+        # card exists to be watched, and a list has a first thing in it.
+        'playlist_items': '1',
         'socket_timeout': 30,
         # A preview for the player, not an archive copy: 480p starts far sooner.
         'format': 'best[height<=480][ext=mp4]/best[height<=480]/best',
