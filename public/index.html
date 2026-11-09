@@ -943,32 +943,14 @@
         async function ensureSocket() {
             if (socketChecked) return !!(socket && socket.connected);
             socketChecked = true;
-            // A voice search can reach the app first and learn it is closed. The
-            // probe below would then print the same refused connection a second
-            // time for no gain, which is exactly what two red lines in the console
-            // on one visit looked like.
-            if (window.appUnavailable) {
-                useHttpFallback = true;
-                setConnection('snapshot');
-                return false;
-            }
-            try {
-                const probe = await fetchBounded(LOCAL_APP + '/api/stats', {}, 2500);
-                if (!probe || !probe.ok) throw new Error('the desktop app is not running');
-                socket.connect();
-                await new Promise((resolve) => {
-                    const finish = () => resolve();
-                    socket.once('connect', finish);
-                    socket.once('connect_error', finish);
-                    setTimeout(finish, 4000);
-                });
-            } catch (err) {
-                window.appUnavailable = true;
-                console.log('The desktop app is not running here, searching the bundled index');
-                useHttpFallback = true;
-                setConnection('snapshot');
-            }
-            return !!(socket && socket.connected);
+            // No probe. The live channel exists for the desktop app, and the app
+            // is not running here: asking 127.0.0.1:5001 on every first search
+            // only ever produced a refused connection, so the page starts on the
+            // bundled index instead of paying for an answer it already knows.
+            window.appUnavailable = true;
+            useHttpFallback = true;
+            setConnection('snapshot');
+            return false;
         }
         try {
             // Reconnect a few times: a server restart used to leave the page
@@ -3628,7 +3610,11 @@
         // (the local Python app); a static copy points it at the hosted
         // downloader in config.js.
         function apiUrl(path) {
-            const base = (window.DOWNLOAD_API || '').replace(/\/+$/, '');
+            const configured = (window.DOWNLOAD_API || '').replace(/\/+$/, '');
+            // config.js points at the desktop app on 5001, which is normally not
+            // running. Downloads are served by downloader_service on 8080, so a
+            // configured address that is only the closed app is not used.
+            const base = (configured && configured !== LOCAL_APP) ? configured : DOWNLOAD_SERVICE;
             return base + path;
         }
 
@@ -3642,9 +3628,12 @@
         function downloadCandidates() {
             const list = [];
             const configured = (window.DOWNLOAD_API || '').replace(/\/+$/, '');
-            if (configured) list.push(configured);
-            if (!window.appUnavailable && !list.includes(LOCAL_APP)) list.push(LOCAL_APP);
+            // The downloader service comes first: it is small, it stays running,
+            // and it is where config.js points anyway. The heavy app used to be
+            // asked first and, being closed, cost a refused connection before
+            // every download that 8080 could have served straight away.
             if (!list.includes(DOWNLOAD_SERVICE)) list.push(DOWNLOAD_SERVICE);
+            if (configured && configured !== DOWNLOAD_SERVICE && configured !== LOCAL_APP) list.push(configured);
             return list;
         }
 
@@ -3996,10 +3985,10 @@
                 // on Cloudflare so voice works with no app running at all. The
                 // app is tried first because it is the faster of the two, and a
                 // closed app refuses the connection immediately.
-                const candidates = [];
-                if (window.DOWNLOAD_API && !window.appUnavailable) candidates.push(apiUrl('/api/transcribe'));
-                const edge = (location.origin + '/api/transcribe');
-                if (!candidates.includes(edge)) candidates.push(edge);
+                // Cloudflare Whisper only. The desktop app also transcribes, but
+                // it is normally closed here and every voice search paid for a
+                // refused connection to find that out.
+                const candidates = [location.origin + '/api/transcribe'];
 
                 let response = null;
                 let failure = null;
