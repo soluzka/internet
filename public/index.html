@@ -838,6 +838,8 @@
             <button class="search-btn" id="searchBtn" onclick="doSearch()">Search</button>
             <button class="top-btn" id="topBtn" onclick="showTop()"
                     title="The most-watched videos for these words, or the contents of a playlist link">Top 100</button>
+            <button class="top-btn" id="syncBtn" onclick="showSync()"
+                    title="Your sync code: the same saved search on another device">Sync</button>
         </div>
         <div class="ai-status" id="aiStatus"></div>
         <div class="voice-transcript" id="voiceTranscript"></div>
@@ -1422,6 +1424,11 @@
                         speak(`Found ${found.total} videos about ${query}`);
                         isVoiceSearch = false;
                     }
+
+                    // Kept for the next visit, and written now rather than only on
+                    // exit: a browser that is closed abruptly never fires the exit
+                    // event, and the search would still be lost.
+                    saveSession(query, found);
                 };
 
                 // The index is a table in D1 behind the Worker now: sixty rows per
@@ -3920,6 +3927,19 @@
             }
         }
 
+        // Leaving the page: send anything pending and keep the current search.
+        window.addEventListener('pagehide', () => { flushClicks(); });
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') flushClicks();
+        });
+
+        // Put the last search back as soon as the script is ready.
+        setTimeout(() => {
+            try {
+                if (typeof restoreSession === 'function') restoreSession();
+            } catch (err) { /* a failed restore must not stop the page */ }
+        }, 0);
+
         // --- Video Player ---
         // Opening a video is the only signal the site has about what is worth
         // showing. The count it increments is the same one the cards are ordered
@@ -3978,6 +3998,153 @@
                 const queued = readClickQueue().length;
                 if (!queued) showToast('info', 'Clicks saved', 'The clicks made while the database was unavailable are now recorded.');
             }
+        }
+
+        // Backing out of the page used to throw the search away: the results, the
+        // query and anything still waiting to be stored all went with it. The last
+        // search is kept in this browser and put back when the page opens again, so
+        // leaving and returning picks up where it was.
+        const SESSION_KEY = 'lastSearch';
+
+        // A code that can be typed on another device. Browser storage never leaves
+        // its browser, and this site has no accounts, so this short string is the
+        // only thing that can carry a saved search from one machine to another.
+        function makeSyncCode() {
+            const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+            const pick = () => alphabet[Math.floor(Math.random() * alphabet.length)];
+            return pick() + pick() + pick() + '-' + pick() + pick() + pick();
+        }
+
+        function syncCode() {
+            let code = '';
+            try { code = localStorage.getItem('syncCode') || ''; } catch (err) { /* private mode */ }
+            if (!code) {
+                code = makeSyncCode();
+                try { localStorage.setItem('syncCode', code); } catch (err) { /* kept in memory only */ }
+            }
+            return code;
+        }
+
+        function sessionPayload(query, found) {
+            const rows = (found.results || []).slice(0, 300).map(row => ({
+                url: row.url,
+                title: row.title,
+                description: String(row.description || '').slice(0, 300),
+                thumbnail: row.thumbnail,
+                duration: row.duration,
+                source: row.source,
+            }));
+            return {
+                query: query,
+                total: found.total || rows.length,
+                results: rows,
+                stats: indexStats,
+                at: Date.now(),
+            };
+        }
+
+        function saveSession(query, found) {
+            const payload = sessionPayload(query, found);
+            try {
+                localStorage.setItem(SESSION_KEY, JSON.stringify(payload));
+            } catch (err) { /* storage full: the search simply is not kept here */ }
+
+            // And to the server, under this device's code, so another device can
+            // pick it up. A failure here is not worth interrupting anything.
+            fetchBounded('api/sync?code=' + encodeURIComponent(syncCode()), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ payload: JSON.stringify(payload) }),
+            }, 8000).catch(() => {});
+        }
+
+        function applySession(saved) {
+            if (!saved || !saved.query || !Array.isArray(saved.results)) return false;
+            currentQuery = saved.query;
+            searchInput.value = saved.query;
+            if (saved.stats && saved.stats.total_videos) {
+                indexStats = saved.stats;
+                updateStats(indexStats);
+            }
+            const empty = document.getElementById('emptyState');
+            if (empty) empty.remove();
+            aiStatus.innerHTML = renderSummary(
+                saved.query,
+                saved.total || saved.results.length,
+                indexStats ? indexStats.total_videos : 0,
+                ['restored from your last visit']
+            );
+            appendResults(saved.results.map(row => Object.assign({ score: 1, genre: null }, row)));
+            return true;
+        }
+
+        // The copy kept by the server under this code, when it is newer than the one
+        // in this browser.
+        async function pullSession() {
+            try {
+                const response = await fetchBounded(
+                    'api/sync?code=' + encodeURIComponent(syncCode()), {}, 10000);
+                if (!response.ok) return false;
+                const doc = await response.json();
+                if (!doc || !doc.payload) return false;
+                const saved = JSON.parse(doc.payload);
+                let local = null;
+                try { local = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); } catch (err) {}
+                if (local && (local.at || 0) >= (saved.at || 0)) return false;
+                try { localStorage.setItem(SESSION_KEY, JSON.stringify(saved)); } catch (err) {}
+                return applySession(saved);
+            } catch (err) {
+                return false;
+            }
+        }
+
+        // The Sync button: show this device's code, or adopt another device's.
+        async function showSync() {
+            const current = syncCode();
+            const entered = window.prompt(
+                'Your sync code is ' + current + '\n\n'
+                + 'Type it on another device to open the same saved search there.\n'
+                + 'To follow another device instead, type its code below.',
+                current
+            );
+            if (entered === null) return;
+            const code = String(entered).toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 12);
+            if (code.length < 4) {
+                showToast('error', 'That code is too short', 'A code looks like ABC-123.');
+                return;
+            }
+            if (code === current) {
+                try { await navigator.clipboard.writeText(code); } catch (err) {}
+                showToast('info', 'Code ' + code, 'Copied. Type it on another device under Sync.');
+                return;
+            }
+            localStorage.setItem('syncCode', code);
+            const pulled = await pullSession();
+            if (!pulled) {
+                showToast('info', 'Following ' + code, 'Nothing saved under that code yet - this search will be saved to it.');
+                saveSession(currentQuery, { results: [] });
+            } else {
+                showToast('info', 'Following ' + code, 'That device\'s saved search is now open here.');
+            }
+        }
+
+        function restoreSession() {
+            let saved = null;
+            try {
+                saved = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
+            } catch (err) {
+                return false;
+            }
+            // A week is long enough to be useful and short enough to be current.
+            if (!saved || !saved.query || !Array.isArray(saved.results) || !saved.results.length) {
+                return false;
+            }
+            if (Date.now() - (saved.at || 0) > 7 * 24 * 60 * 60 * 1000) return false;
+            setConnection('snapshot');
+            const shown = applySession(saved);
+            // Then ask the server whether another device has something newer.
+            pullSession().catch(() => {});
+            return shown;
         }
 
         function recordClick(url, title) {

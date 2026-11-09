@@ -45,6 +45,12 @@ const CLICK_ROUTE = /^\/api\/click$/i;
 // search that reaches it happens on the user's PC and only the result travels.
 const INGEST_ROUTE = /^\/api\/ingest$/i;
 
+// A short code that ties one person's saved search to several devices. There are
+// no accounts on this site, and browser storage never leaves its own browser, so
+// the code is the one thing that can travel: type it once on another device and
+// the same saved search follows.
+const SYNC_ROUTE = /^\/api\/sync$/i;
+
 // The music model cannot run here: it needs a GPU that a Worker does not have.
 // These paths exist so the page gets a straight answer instead of a 405 from
 // the static asset handler, and so an address can be supplied with SONG_API
@@ -91,6 +97,10 @@ export default {
 
     if (INGEST_ROUTE.test(url.pathname)) {
       return ingestVideos(env, request);
+    }
+
+    if (SYNC_ROUTE.test(url.pathname)) {
+      return syncSession(env, request, url);
     }
 
     if (SONG_ROUTES.some((route) => route.test(url.pathname))) {
@@ -442,6 +452,54 @@ function formatSeconds(value) {
   const minutes = Math.floor(total / 60);
   const seconds = total % 60;
   return minutes + ':' + String(seconds).padStart(2, '0');
+}
+
+async function syncSession(env, request, url) {
+  if (request.method === 'OPTIONS') return new Response(null, { status: 204 });
+  if (!env.DB) return json({ error: 'No video index is attached to this Worker.' }, 501);
+
+  // Codes are shown to people, so they stay short and typable: letters, digits
+  // and dashes only.
+  const code = String(url.searchParams.get('code') || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9-]/g, '')
+    .slice(0, 12);
+  if (code.length < 4) return json({ error: 'A sync code is needed.' }, 400);
+
+  if (request.method === 'GET') {
+    try {
+      const row = await env.DB.prepare(
+        'SELECT payload, updated_at FROM sync_sessions WHERE code = ?'
+      ).bind(code).first();
+      return json({
+        code,
+        payload: row ? row.payload : null,
+        updated_at: row ? Number(row.updated_at) || 0 : 0,
+      });
+    } catch (err) {
+      return json({ error: 'The saved search could not be read.' }, 503);
+    }
+  }
+
+  if (request.method === 'POST') {
+    const body = await request.json().catch(() => null);
+    const payload = body && typeof body.payload === 'string' ? body.payload : '';
+    if (!payload) return json({ error: 'There was nothing to save.' }, 400);
+    try {
+      await env.DB.prepare(
+        'INSERT INTO sync_sessions (code, payload, updated_at) VALUES (?, ?, ?) '
+        + 'ON CONFLICT(code) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at'
+      ).bind(code, payload.slice(0, 200000), Date.now()).run();
+      return json({ ok: true, code });
+    } catch (err) {
+      return json({
+        error: 'The search could not be saved to the server.',
+        detail: String((err && err.message) || err).slice(0, 200),
+      }, 503);
+    }
+  }
+
+  return json({ error: 'Only reading and saving are supported here.' }, 405);
 }
 
 async function ingestVideos(env, request) {
