@@ -301,7 +301,7 @@ async function searchIndex(env, url) {
   }
 
   if (!query) {
-    return json({ query: '', total: 0, library: await indexTotals(env), discovered: 0, videos: [] });
+    return json({ query: '', total: 0, library: await readStats(env), discovered: 0, videos: [] });
   }
 
   // A search is also how the library grows. Before counting, this asks
@@ -312,7 +312,7 @@ async function searchIndex(env, url) {
   if (url.searchParams.get('discover') === '1') {
     discovered = await discoverVideos(env, query);
   }
-  const library = await indexTotals(env);
+  const library = await readStats(env);
 
   const terms = (query.toLowerCase().match(/[a-z0-9']+/g) || []).slice(0, 8);
   if (!terms.length) {
@@ -368,15 +368,15 @@ async function searchIndex(env, url) {
   // following the URL cannot fill the history with its own queries.
   if (url.searchParams.get('log') === '1') {
     try {
-      await env.DB.batch([
-        env.DB.prepare(
-          'INSERT INTO search_history (query, result_count, searched_at) VALUES (?, ?, ?)'
-        ).bind(query, Number(counted && counted.n) || videos.length, Date.now() / 1000),
-        bumpStats(env, 'total_searches', 1),
-      ]);
-      library.total_searches += 1;
-    } catch (err) { /* a full or missing table must not fail the search */ }
-  }  return json({
+      await env.DB.prepare(
+        'INSERT INTO search_history (query, result_count, searched_at) VALUES (?, ?, ?)'
+      ).bind(query, Number(counted && counted.n) || videos.length, Date.now() / 1000).run();
+    } catch (err) { /* the history is a nicety; the count below still happens */ }
+    // Counted in KV, so a database refusing writes cannot stop a search counting.
+    const after = await bumpStats(env, 'total_searches', 1);
+    if (after.total_searches) library.total_searches = after.total_searches;
+  }
+  return json({
     query,
     total: counted ? (Number(counted.n) || 0) : Number(videos.length) + offset,
     library,
@@ -556,14 +556,14 @@ async function ingestVideos(env, request) {
     );
   }
   if (!statements.length) {
-    return json({ added: 0, library: await indexTotals(env) });
+    return json({ added: 0, library: await readStats(env) });
   }
 
   let added = 0;
   try {
     const results = await env.DB.batch(statements);
     for (const result of results) added += Number((result.meta && result.meta.changes) || 0);
-    if (added) await bumpStats(env, 'total_videos', added).run();
+    if (added) await bumpStats(env, 'total_videos', added);
   } catch (err) {
     // The reason is useful: a full disk, a locked table and an exhausted daily
     // limit all look identical from the page otherwise.
@@ -572,7 +572,7 @@ async function ingestVideos(env, request) {
       detail: String((err && err.message) || err).slice(0, 300),
     }, 500);
   }
-  return json({ added, library: await indexTotals(env) });
+  return json({ added, library: await readStats(env) });
 }
 
 async function recordClick(env, request) {
@@ -602,52 +602,46 @@ async function recordClick(env, request) {
     return json({ error: 'A click needs an id.' }, 400);
   }
 
-  try {
-    await env.DB.prepare(
-      'INSERT INTO click_events (event_id, url, query, title, clicked_at, counted) VALUES (?, ?, ?, ?, ?, 0) '
-      + 'ON CONFLICT(event_id) DO NOTHING'
-    ).bind(eventId, videoUrl, query, title, Date.now()).run();
-  } catch (err) {
-    // A click is worth keeping even when the database cannot take it yet: the
-    // page holds it in the browser and sends it again later, under the same id.
+  // The click itself is counted in KV: one read, one write, no rows scanned and no
+  // dependence on D1 being able to answer. The ids of the clicks already counted
+  // travel in the same document, so sending the same click again finds its id and
+  // writes nothing.
+  const doc = await readStatsDoc(env);
+  if (!doc.v && !doc.s && !doc.c) {
+    const seeded = await indexTotals(env);
+    doc.v = seeded.total_videos;
+    doc.s = seeded.total_searches;
+    doc.c = seeded.total_clicks;
+  }
+
+  if (doc.ids.includes(eventId)) {
+    return json({ ok: true, duplicate: true, library: statsFromDoc(doc) });
+  }
+
+  doc.c += 1;
+  doc.ids.push(eventId);
+  const stored = await writeStatsDoc(env, doc);
+  if (!stored) {
+    // Nothing was counted: the page keeps the click and sends it again.
     return json({ ok: false, queued: true, library: null });
   }
 
-  // Claiming the increment is what makes it happen once. Only the request that
-  // flips counted from 0 to 1 moves the counters; every other send of the same
-  // click finds it already claimed and writes nothing.
-  let claimed = 0;
-  try {
-    const claim = await env.DB.prepare(
-      'UPDATE click_events SET counted = 1 WHERE event_id = ? AND counted = 0'
-    ).bind(eventId).run();
-    claimed = Number(claim && claim.meta && claim.meta.changes) || 0;
-  } catch (err) {
-    return json({ ok: false, queued: true, library: null });
-  }
-
-  if (!claimed) {
-    // Already counted. Nothing is written a second time.
-    return json({ ok: true, duplicate: true, library: await indexTotals(env) });
-  }
-
+  // What the click teaches the library is secondary, and it is the part that needs
+  // D1. A failure here no longer loses the click or holds the counter back.
   try {
     await env.DB.batch([
       env.DB.prepare('UPDATE videos SET click_count = click_count + 1 WHERE url = ?').bind(videoUrl),
       env.DB.prepare(
         'INSERT INTO learned_preferences (query, clicked_url, clicked_title, learned_at) VALUES (?, ?, ?, ?)'
       ).bind(query, videoUrl, title, Date.now() / 1000),
-      bumpStats(env, 'total_clicks', 1),
+      env.DB.prepare(
+        'INSERT INTO click_events (event_id, url, query, title, clicked_at, counted) VALUES (?, ?, ?, ?, ?, 1) '
+        + 'ON CONFLICT(event_id) DO NOTHING'
+      ).bind(eventId, videoUrl, query, title, Date.now()),
     ]);
-  } catch (err) {
-    // The click is stored but not yet counted. Giving the claim back lets the
-    // same click, sent again later, be the one that counts it - once.
-    await env.DB.prepare('UPDATE click_events SET counted = 0 WHERE event_id = ?')
-      .bind(eventId).run().catch(() => {});
-    return json({ ok: false, queued: true, partial: true, library: null });
-  }
+  } catch (err) { /* the click is counted; the library catches up when D1 works */ }
 
-  return json({ ok: true, duplicate: false, library: await indexTotals(env) });
+  return json({ ok: true, duplicate: false, library: statsFromDoc(doc) });
 }
 
 function parseGenre(text) {
@@ -660,13 +654,72 @@ function parseGenre(text) {
   }
 }
 
-// The three counters used to be three full-table aggregates: COUNT over the
-// videos, COUNT over the history, and SUM over every click_count. On a library
-// of 8,756 rows that is about 17,500 rows read every single time the page asked
-// for its numbers - and the counters are read on page load, on every search and
-// again after every click. That is what exhausted D1's free daily row-read limit
-// and made the page show zeroes and the search answer 500. One row now holds the
-// totals, and the write paths keep it current.
+// The counters and the clicks live in KV, not in D1. D1 bills in rows read, and
+// the counters are read on page load, on every search and after every click, so
+// they alone could run an account out of its free daily allowance - and once D1
+// stops answering, storing a click stops too. KV bills in operations and allows
+// far more of them, so one small document holds the totals and the ids of the
+// clicks already counted, and D1 keeps only the videos.
+const STATS_KEY = 'library';
+const SEEN_CLICK_LIMIT = 200;
+
+function statsFromDoc(doc) {
+  return {
+    total_videos: Number(doc.v) || 0,
+    total_searches: Number(doc.s) || 0,
+    total_clicks: Number(doc.c) || 0,
+  };
+}
+
+async function readStatsDoc(env) {
+  if (!env.STATS) return { v: 0, s: 0, c: 0, ids: [] };
+  try {
+    const text = await env.STATS.get(STATS_KEY);
+    if (!text) return { v: 0, s: 0, c: 0, ids: [] };
+    const doc = JSON.parse(text);
+    return {
+      v: Number(doc.v) || 0,
+      s: Number(doc.s) || 0,
+      c: Number(doc.c) || 0,
+      ids: Array.isArray(doc.ids) ? doc.ids.slice(-SEEN_CLICK_LIMIT) : [],
+    };
+  } catch (err) {
+    return { v: 0, s: 0, c: 0, ids: [] };
+  }
+}
+
+async function writeStatsDoc(env, doc) {
+  if (!env.STATS) return false;
+  try {
+    await env.STATS.put(STATS_KEY, JSON.stringify({
+      v: Number(doc.v) || 0,
+      s: Number(doc.s) || 0,
+      c: Number(doc.c) || 0,
+      ids: (doc.ids || []).slice(-SEEN_CLICK_LIMIT),
+      at: Date.now(),
+    }));
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+// First use after this change: the database still holds the real totals, so they
+// are copied across once and KV answers from then on. If D1 cannot be read either,
+// the answer is zeroes and the page keeps showing what it already knows.
+async function readStats(env) {
+  const doc = await readStatsDoc(env);
+  if (doc.v || doc.s || doc.c) return statsFromDoc(doc);
+  const seeded = await indexTotals(env);
+  if (seeded.total_videos || seeded.total_searches || seeded.total_clicks) {
+    await writeStatsDoc(env, {
+      v: seeded.total_videos, s: seeded.total_searches, c: seeded.total_clicks, ids: [],
+    });
+  }
+  return seeded;
+}
+
+// The D1 totals, kept only to seed KV once and to answer if KV is missing.
 async function indexTotals(env) {
   if (!env.DB) return { total_videos: 0, total_searches: 0, total_clicks: 0 };
   try {
@@ -683,11 +736,20 @@ async function indexTotals(env) {
   }
 }
 
-// Keeps the counters honest without ever scanning the table again.
-function bumpStats(env, field, amount) {
-  if (!env.DB) return null;
-  return env.DB.prepare(`UPDATE library_stats SET ${field} = ${field} + ? WHERE id = 1`)
-    .bind(amount);
+// One read and one write in KV, whatever is being counted.
+async function bumpStats(env, field, amount) {
+  const doc = await readStatsDoc(env);
+  if (!doc.v && !doc.s && !doc.c) {
+    const seeded = await indexTotals(env);
+    doc.v = seeded.total_videos;
+    doc.s = seeded.total_searches;
+    doc.c = seeded.total_clicks;
+  }
+  if (field === 'total_videos') doc.v += amount;
+  else if (field === 'total_searches') doc.s += amount;
+  else if (field === 'total_clicks') doc.c += amount;
+  await writeStatsDoc(env, doc);
+  return statsFromDoc(doc);
 }
 
 function json(body, status) {

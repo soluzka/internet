@@ -43,6 +43,17 @@
       "database_id": "95b355c9-264c-4ee6-aa11-f4bf6b021a43"
     }
   ],
+  // The counters and the clicks. D1 counts rows read, and a single search can
+  // scan thousands of them; the free daily allowance ran out and took the whole
+  // page down with it - no counters, no stored clicks, no saved searches. KV
+  // counts operations instead of rows and allows far more of them, so the
+  // numbers and the clicks live here and D1 keeps only the videos themselves.
+  "kv_namespaces": [
+    {
+      "binding": "STATS",
+      "id": "51856e55314448caa85b0e3b0a77b7f5"
+    }
+  ],
   "observability": {
     "enabled": true
   }
