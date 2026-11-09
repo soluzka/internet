@@ -943,6 +943,15 @@
         async function ensureSocket() {
             if (socketChecked) return !!(socket && socket.connected);
             socketChecked = true;
+            // A voice search can reach the app first and learn it is closed. The
+            // probe below would then print the same refused connection a second
+            // time for no gain, which is exactly what two red lines in the console
+            // on one visit looked like.
+            if (window.appUnavailable) {
+                useHttpFallback = true;
+                setConnection('snapshot');
+                return false;
+            }
             try {
                 const probe = await fetchBounded(LOCAL_APP + '/api/stats', {}, 2500);
                 if (!probe || !probe.ok) throw new Error('the desktop app is not running');
