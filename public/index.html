@@ -3957,6 +3957,13 @@
             if ((match = link.match(/archive\.org\/details\/([^/?#]+)/))) {
                 return { src: 'https://archive.org/embed/' + match[1] };
             }
+            // Spotify ships its own embeddable player, and it accepts any track,
+            // album, playlist or episode link. It plays previews without an
+            // account and the whole track when the visitor is signed in, which is
+            // as much as any page can offer for Spotify.
+            if ((match = link.match(/open\.spotify\.com\/(track|album|playlist|episode|show|artist)\/([A-Za-z0-9]+)/))) {
+                return { src: 'https://open.spotify.com/embed/' + match[1] + '/' + match[2] };
+            }
             if ((match = link.match(/\.(mp4|webm|ogg|m4v)(\?|#|$)/i))) {
                 return { video: link };
             }

@@ -405,6 +405,65 @@ PLAY_MAX_FILES = 3
 PLAY_TTL_SECONDS = 900
 
 
+def _download_to(target: str, tmp_dir: str):
+    """Fetches one target into tmp_dir and returns the files it produced."""
+    options = {
+        'quiet': True,
+        'no_warnings': True,
+        # A playlist link is played as its first video rather than refused: the
+        # card exists to be watched, and a list has a first thing in it.
+        'playlist_items': '1',
+        'socket_timeout': 30,
+        # A preview for the player, not an archive copy: 480p starts far sooner.
+        # No container is demanded here: the result is remuxed into mp4 below, and
+        # asking for one made some videos fail as "format not available".
+        'format': 'best[height<=480]/best/worst',
+        'outtmpl': os.path.join(tmp_dir, 'video.%(ext)s'),
+        'ffmpeg_location': os.path.dirname(get_ffmpeg_exe()),
+    }
+    cookies = _cookie_path()
+    if cookies:
+        options['cookiefile'] = cookies
+
+    with yt_dlp.YoutubeDL(options) as ydl:
+        ydl.extract_info(target, download=True)
+
+    files = [os.path.join(tmp_dir, name) for name in os.listdir(tmp_dir)]
+    files = [path for path in files if os.path.isfile(path) and os.path.getsize(path) > 0]
+    if not files:
+        raise RuntimeError('nothing was downloaded for that link')
+    return files
+
+
+def _spotify_title(url: str) -> str:
+    try:
+        response = requests.get('https://open.spotify.com/oembed', params={'url': url},
+                                timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
+        if response.ok:
+            return (response.json().get('title') or '').strip()[:120]
+    except Exception:
+        pass
+    return ''
+
+
+def _page_search_term(url: str) -> str:
+    """The page's own title, which is what gets searched for as a last resort."""
+    try:
+        response = requests.get(url, timeout=20, headers={
+            'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                           '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36')})
+        match = re.search(r'<title[^>]*>(.*?)</title>', response.text, re.I | re.S)
+        if not match:
+            return ''
+        title = re.sub(r'\s+', ' ', match.group(1)).strip()
+        for suffix in (' - Spotify', ' | Spotify', ' - YouTube', ' - Dailymotion',
+                       ' - TikTok', ' | Facebook'):
+            title = title.replace(suffix, '')
+        return title[:120]
+    except Exception:
+        return ''
+
+
 @app.route('/api/play')
 def api_play():
     """The video itself, for a host whose CDN will not stream to the browser.
@@ -430,28 +489,37 @@ def api_play():
         shutil.rmtree(os.path.dirname(cached['path']), ignore_errors=True)
 
     tmp_dir = tempfile.mkdtemp(prefix='play_')
-    options = {
-        'quiet': True,
-        'no_warnings': True,
-        # A playlist link is played as its first video rather than refused: the
-        # card exists to be watched, and a list has a first thing in it.
-        'playlist_items': '1',
-        'socket_timeout': 30,
-        # A preview for the player, not an archive copy: 480p starts far sooner.
-        'format': 'best[height<=480][ext=mp4]/best[height<=480]/best',
-        'outtmpl': os.path.join(tmp_dir, 'video.%(ext)s'),
-        'ffmpeg_location': os.path.dirname(get_ffmpeg_exe()),
-    }
-    cookies = _cookie_path()
-    if cookies:
-        options['cookiefile'] = cookies
 
-    try:
-        with yt_dlp.YoutubeDL(options) as ydl:
-            ydl.extract_info(url, download=True)
-    except Exception as exc:  # noqa: BLE001 - reported to the page as text
+    # Some links are not videos at all. Spotify is the common one: it is DRM and
+    # cannot be downloaded, but its own oEmbed answers with the real title, and
+    # that title finds the same song on YouTube. So every link gets a chance, and
+    # a link that refuses to be extracted is searched for by name instead of
+    # leaving the person with nothing to play.
+    attempts = [url]
+    if 'spotify.com' in urlparse(url).netloc.lower():
+        term = _spotify_title(url)
+        attempts = ['ytsearch1:%s' % term] if term else []
+
+    files = None
+    last_error = ''
+    for attempt in attempts:
+        try:
+            files = _download_to(attempt, tmp_dir)
+            break
+        except Exception as exc:  # noqa: BLE001 - reported to the page as text
+            last_error = str(exc)
+
+    if files is None and 'spotify.com' not in urlparse(url).netloc.lower():
+        term = _page_search_term(url)
+        if term:
+            try:
+                files = _download_to('ytsearch1:%s' % term, tmp_dir)
+            except Exception as exc:  # noqa: BLE001
+                last_error = str(exc)
+
+    if files is None:
         shutil.rmtree(tmp_dir, ignore_errors=True)
-        return jsonify({'error': _friendly_error(str(exc), url)}), 502
+        return jsonify({'error': _friendly_error(last_error, url)}), 502
 
     files = [os.path.join(tmp_dir, name) for name in os.listdir(tmp_dir)]
     files = [path for path in files if os.path.isfile(path) and os.path.getsize(path) > 0]
