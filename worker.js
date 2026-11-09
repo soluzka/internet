@@ -266,9 +266,14 @@ async function transcribe(request, env) {
 // again. A search that logs itself, or one that discovers new videos, has a side
 // effect and is never cached.
 async function cachedSearch(env, request, url) {
+  // The counters are not a search: they are what the page shows while someone is
+  // looking at them, and a minute-old copy of a number that a click just moved
+  // reads as "the click did not count".
+  const askingForCounters = !(url.searchParams.get('q') || '').trim();
   const plain = request.method === 'GET'
     && url.searchParams.get('log') !== '1'
-    && url.searchParams.get('discover') !== '1';
+    && url.searchParams.get('discover') !== '1'
+    && !askingForCounters;
   if (!plain) return searchIndex(env, url);
 
   const cache = caches.default;

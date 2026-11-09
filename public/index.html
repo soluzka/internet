@@ -4023,6 +4023,9 @@
             let latest = null;
             for (const item of pending) {
                 try {
+                    // Clicks queued before clicks had ids get one here, so the
+                    // database can tell them apart and count each exactly once.
+                    if (!item.id) item.id = newClickId();
                     const response = await fetchBounded('api/click', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
