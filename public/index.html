@@ -3955,7 +3955,13 @@
 
             // Plays the file this machine prepared. If it cannot be fetched, the
             // picture stays and says so, rather than leaving a black rectangle.
-            const playStream = (stream) => {
+            //
+            // The file is fetched rather than pointed at: Chrome treats a video
+            // element on http://127.0.0.1 as mixed content inside this https page
+            // and refuses it with MEDIA_ERR_SRC_NOT_SUPPORTED, while a plain fetch
+            // to the same address is allowed. So the bytes come in by fetch and
+            // the player is handed a blob URL.
+            const playStream = async (stream) => {
                 if (poster) poster.style.display = 'none';
                 video.innerHTML = '<video controls autoplay playsinline style="width:100%;height:100%;background:#000"></video>';
                 const player = video.querySelector('video');
@@ -3966,12 +3972,33 @@
                 back.addEventListener('click', () => openPlayer(url, title, desc, thumbnail));
                 video.appendChild(back);
 
+                // This machine has to fetch the file before the browser can play
+                // it, so say that instead of leaving a black frame that looks stuck.
+                if (!video.querySelector('.player-preparing')) {
+                    const note = document.createElement('div');
+                    note.className = 'player-preparing';
+                    note.textContent = 'Preparing the video… a long one takes a minute';
+                    video.appendChild(note);
+                }
+
                 player.addEventListener('error', () => {
                     openPlayer(url, title, desc, thumbnail);
                     showToast('error', 'The video would not play here', 'It is on the source site - use "Open" on the card.');
                 });
 
-                player.src = stream.src;
+                try {
+                    const response = await fetch(stream.src);
+                    if (!response.ok) throw new Error('status ' + response.status);
+                    const blob = await response.blob();
+                    player.src = URL.createObjectURL(blob);
+                    const note = video.querySelector('.player-preparing');
+                    if (note) note.remove();
+                } catch (err) {
+                    openPlayer(url, title, desc, thumbnail);
+                    showToast('error', 'The video would not play here',
+                        'It is on the source site - use "Open" on the card.');
+                    return;
+                }
             };
 
             const startPlayback = async () => {
@@ -3984,14 +4011,6 @@
                 // card play here at all.
                 const button = video.querySelector('.player-poster-play');
                 if (button) button.textContent = '…';
-                // This machine has to fetch the file before the browser can play it,
-                // so say that instead of leaving a still picture that looks stuck.
-                if (poster && !poster.querySelector('.player-preparing')) {
-                    const note = document.createElement('div');
-                    note.className = 'player-preparing';
-                    note.textContent = 'Preparing the video… a long one takes a minute';
-                    poster.appendChild(note);
-                }
                 const src = 'http://127.0.0.1:8080/api/play?url=' + encodeURIComponent(url);
                 playStream({ src: src });
             };

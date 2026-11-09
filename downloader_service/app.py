@@ -19,6 +19,7 @@ one file, one reader, deleted as soon as it has been served.
 import hashlib
 import os
 import re
+import subprocess
 import shutil
 import tempfile
 import threading
@@ -393,6 +394,22 @@ def api_play():
     if not files:
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return jsonify({'error': 'Nothing was downloaded for that video.'}), 404
+
+    # What yt-dlp saves for an HLS source is not always a container a browser
+    # will open: Chrome answers DEMUXER_ERROR_COULD_NOT_OPEN. A stream-copy remux
+    # into a normal, faststart mp4 fixes that and costs a few seconds.
+    remuxed = os.path.join(tmp_dir, 'play.mp4')
+    try:
+        ffmpeg = get_ffmpeg_exe()
+        completed = subprocess.run(
+            [ffmpeg, '-hide_banner', '-loglevel', 'error', '-y', '-i', files[0],
+             '-c', 'copy', '-movflags', '+faststart', remuxed],
+            capture_output=True, timeout=300)
+        if completed.returncode == 0 and os.path.getsize(remuxed) > 0:
+            files = [remuxed]
+    except Exception:
+        # A remux that fails must not lose an otherwise usable download.
+        pass
 
     while len(PLAY_CACHE) >= PLAY_MAX_FILES:
         oldest_key = next(iter(PLAY_CACHE))
