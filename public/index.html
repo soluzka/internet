@@ -3957,13 +3957,10 @@
             if ((match = link.match(/archive\.org\/details\/([^/?#]+)/))) {
                 return { src: 'https://archive.org/embed/' + match[1] };
             }
-            // Spotify ships its own embeddable player, and it accepts any track,
-            // album, playlist or episode link. It plays previews without an
-            // account and the whole track when the visitor is signed in, which is
-            // as much as any page can offer for Spotify.
-            if ((match = link.match(/open\.spotify\.com\/(track|album|playlist|episode|show|artist)\/([A-Za-z0-9]+)/))) {
-                return { src: 'https://open.spotify.com/embed/' + match[1] + '/' + match[2] };
-            }
+            // Spotify deliberately has no embed here: its player answers this
+            // network with 429 Too Many Requests (it shows as a red 429), so the
+            // link is left to the local fetch, which reads the title and plays the
+            // song from a video site instead.
             if ((match = link.match(/\.(mp4|webm|ogg|m4v)(\?|#|$)/i))) {
                 return { video: link };
             }
@@ -3993,7 +3990,7 @@
                 <button type="button" class="player-poster-play" data-play="1" title="${action}" aria-label="${action}">
                     <span>&#9654;</span>
                 </button>
-                <button type="button" class="player-poster-open" data-open="1">${openLabel}</button>
+                <a class="player-poster-open" href="${String(url).replace(/"/g, '&quot;')}" target="_blank" rel="noopener noreferrer" data-open="1">${openLabel}</a>
             </div>`;
         }
 
@@ -4164,11 +4161,10 @@
             };
             const playButton = video.querySelector('.player-poster-play');
             if (playButton) playButton.addEventListener('click', startPlayback);
-            const openButton = video.querySelector('.player-poster-open');
-            if (openButton) openButton.addEventListener('click', event => {
-                event.stopPropagation();
-                openSource(url);
-            });
+            // Left as a real link on purpose: a scripted window.open from this
+            // page was followed in the same tab by the browser, which threw the
+            // search away and landed on the source site. A real link click opens
+            // the tab the way the person's browser is set up to.
             // Clicking the picture plays it. It never leaves the page: the only
             // things that open the source site are the buttons that say so.
             if (poster) poster.addEventListener('click', event => {

@@ -405,6 +405,32 @@ PLAY_MAX_FILES = 3
 PLAY_TTL_SECONDS = 900
 
 
+# yt-dlp looks for a binary literally named ffmpeg; the one imageio-ffmpeg ships is
+# called ffmpeg-win-x86_64-v7.1.exe, so a merge of a video-only stream and its
+# separate audio silently never happened and the two parts were left on disk.
+# One copy under the expected name fixes every merge on this machine.
+_FFMPEG_DIR = None
+
+
+def _ffmpeg_dir() -> str:
+    global _FFMPEG_DIR
+    if _FFMPEG_DIR:
+        return _FFMPEG_DIR
+    source = get_ffmpeg_exe()
+    target = os.path.join(tempfile.gettempdir(), 'ytdl_ffmpeg')
+    os.makedirs(target, exist_ok=True)
+    name = 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg'
+    destination = os.path.join(target, name)
+    if not os.path.exists(destination) or os.path.getsize(destination) != os.path.getsize(source):
+        shutil.copy2(source, destination)
+    try:
+        os.chmod(destination, 0o755)
+    except OSError:
+        pass
+    _FFMPEG_DIR = target
+    return target
+
+
 def _download_to(target: str, tmp_dir: str):
     """Fetches one target into tmp_dir and returns the files it produced."""
     options = {
@@ -415,11 +441,13 @@ def _download_to(target: str, tmp_dir: str):
         'playlist_items': '1',
         'socket_timeout': 30,
         # A preview for the player, not an archive copy: 480p starts far sooner.
-        # No container is demanded here: the result is remuxed into mp4 below, and
-        # asking for one made some videos fail as "format not available".
-        'format': 'best[height<=480]/best/worst',
+        # Many videos only offer a video-only stream plus a separate audio one, so
+        # both are taken and ffmpeg joins them; asking for one combined file made
+        # some of them fail as "format not available".
+        'format': 'bv*[height<=480]+ba/b[height<=480]/bv*+ba/b',
         'outtmpl': os.path.join(tmp_dir, 'video.%(ext)s'),
-        'ffmpeg_location': os.path.dirname(get_ffmpeg_exe()),
+        'merge_output_format': 'mp4',
+        'ffmpeg_location': _ffmpeg_dir(),
     }
     cookies = _cookie_path()
     if cookies:
