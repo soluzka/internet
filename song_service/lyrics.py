@@ -59,9 +59,11 @@ SONG_PROMPT = (
     'song has.\n'
     '- Concrete things a person can see, do or lose. No metaphors about music, '
     'technology, the internet or collections of anything.\n'
-    '- Four lines per verse, four per chorus, two for the bridge: a minute and '
-    'a half of singing needs that much. Under twelve words a line. Do not force '
-    'rhymes.\n'
+    '- Six lines per verse, six per chorus, four for the bridge: the song runs '
+    'up to three minutes and the singing has to reach the end of it. Under '
+    'twelve words a line. Do not force rhymes.\n'
+    '- Each line carries one image or one action. Two short lines that could be '
+    'one are still two lines: the voice needs somewhere to breathe.\n'
     '- Singable rhythm: short lines, plain words, one thought per line.\n'
     '- No title, no numbering, no notes, no quotation marks. Only the tags and '
     'the lines.\n'
@@ -118,9 +120,14 @@ def _text_pipeline(wait_seconds=180):
     answered in nine seconds a minute later. Nothing is wrong with the install,
     so retry until the import has finished, and only then believe the error.
     """
+    from model_lock import import_transformers
+
     deadline = time.time() + wait_seconds
     while True:
         try:
+            # Under the shared lock, so the music model's warm-up cannot be
+            # halfway through the same module when this asks for `pipeline`.
+            import_transformers()
             from transformers import pipeline
             return pipeline
         except ImportError:
@@ -193,7 +200,7 @@ class Lyricist:
         random.seed(seed)
         output = generator(
             messages,
-            max_new_tokens=800,
+            max_new_tokens=1200,
             do_sample=True,
             temperature=0.92,
             top_p=0.92,

@@ -66,7 +66,9 @@ def _allow_private_network(response):
 CPU_OFFLOAD = os.environ.get('ACE_CPU_OFFLOAD', '1') != '0'
 DTYPE = os.environ.get('ACE_DTYPE', 'bfloat16')
 DEFAULT_STEPS = int(os.environ.get('ACE_STEPS', '30'))
-MAX_SECONDS = float(os.environ.get('ACE_MAX_SECONDS', '120'))
+# Three minutes: the page asks for 90-180 s depending on the seed, and a cap of
+# 120 quietly truncated every longer request back to two.
+MAX_SECONDS = float(os.environ.get('ACE_MAX_SECONDS', '180'))
 
 _pipeline = None
 _pipeline_lock = threading.Lock()
@@ -143,6 +145,14 @@ def _load_pipeline():
             return _pipeline
         if not os.path.isdir(CHECKPOINT):
             raise RuntimeError(f'Checkpoint not found: {CHECKPOINT}')
+        # transformers first, under the shared lock: the lyric warm-up runs in
+        # another thread at the same moment, and whichever arrives second used to
+        # see a module with no attributes yet - which is what made this fail with
+        # "cannot import name 'CLIPTextModelWithProjection'" and left health
+        # saying loaded: false after every start.
+        from model_lock import import_transformers
+
+        import_transformers()
         from acestep.pipeline_ace_step import ACEStepPipeline
         _pipeline = ACEStepPipeline(
             checkpoint_dir=CHECKPOINT,

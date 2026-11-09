@@ -1924,21 +1924,28 @@
         function libraryTempo(summary, seed) {
             const random = seededRandom(seed + 31);
             const genres = summary.genres || [];
-            // The lead genre weighs most, but the others still pull.
-            let weighted = 0;
-            let weight = 0;
-            genres.forEach((genre, index) => {
-                const share = 1 / (index + 1);
-                weighted += (REMIX_STYLES[genre.name] || REMIX_NEUTRAL).bpm * share;
-                weight += share;
-            });
-            const base = weight ? weighted / weight : 120;
-            // Four tempo characters instead of a couple of beats of jitter, so a
-            // new press can be a slow song or a fast one, not a near copy.
+            // A recognised genre keeps its tempo. The wide swing below used to
+            // apply to everything, so a dubstep song came out at 98 bpm and a
+            // drum and bass one at 172: the prompt said the genre and the render
+            // disagreed with it.
+            const known = genres.filter(genre => REMIX_STYLES[genre.name]);
+            if (known.length) {
+                let weighted = 0;
+                let weight = 0;
+                known.forEach((genre, index) => {
+                    const share = 1 / (index + 1);
+                    weighted += REMIX_STYLES[genre.name].bpm * share;
+                    weight += share;
+                });
+                // A few bpm either way, not thirty.
+                const drift = Math.round((random() - 0.5) * 4);
+                return Math.round(Math.min(180, Math.max(60, weighted / weight + drift)));
+            }
+            // No genre anyone recognises: the tempo can be anything.
             const shape = random();
             const scale = shape < 0.25 ? 0.7 : shape < 0.5 ? 0.85 : shape < 0.75 ? 1 : 1.2;
             const jitter = Math.round((random() - 0.5) * 10);
-            return Math.round(Math.min(172, Math.max(64, base * scale + jitter)));
+            return Math.round(Math.min(180, Math.max(64, 120 * scale + jitter)));
         }
 
         // Small deterministic generator: the same seed always rebuilds the same
@@ -2023,28 +2030,46 @@
             const offset = seed % words.length;
             const word = (index) => words[(index + offset) % words.length];
             const line = (text) => text.charAt(0).toUpperCase() + text.slice(1);
+            // Six lines a section, not four: the songs run up to three minutes
+            // now, and four lines of singing leaves most of that to the band.
             const banks = {
                 'Chorus': [
                     line(`${word(0)} in the rain, ${word(1)} on the wire`),
                     'I keep the same road turning in my hands',
                     line(`Say the ${word(2)} again, louder than the engine`),
                     'Nothing in my pockets but the night',
+                    line(`Hold the ${word(3)} up where the streetlight can find it`),
+                    'I would do it all again for one more hour',
                 ],
                 'Verse 1': [
                     line(`${word(4)} on the window, ${word(5)} in the hall`),
                     'You left the door half open and the lights on',
                     line(`I wore the ${word(6)} jacket till the seams gave out`),
                     'Counting cracks in the ceiling until the morning came',
+                    line(`A ${word(7)} on the table, still warm, still mine`),
+                    'I told myself the quiet was a kind of answer',
                 ],
                 'Verse 2': [
                     line(`${word(8)} in the mirror, ${word(9)} in my teeth`),
                     'The city keeps its promises in ways I cannot read',
                     line(`Every ${word(10)} sounds like something that I lost`),
                     'I am learning how to carry what I need',
+                    line(`Down by the ${word(11)} where the buses turn around`),
+                    'I put one foot past the doorway and the year let go',
+                ],
+                'Verse 3': [
+                    line(`Later, ${word(12)} and the floorboards and the rain`),
+                    'What I thought would break me only made the room feel small',
+                    line(`${word(13)} in the sink, ${word(14)} on the stairs`),
+                    'I packed the parts of me that still worked',
+                    line(`The ${word(15)} keeps ticking though nobody winds it`),
+                    'And the morning comes anyway, whether or not I do',
                 ],
                 'Bridge': [
                     'Strip it back until the room tone is the only sound',
                     'Hold the quiet, then step out into the cold',
+                    'Everything I could not say is still here, waiting',
+                    'One more bar, then the whole thing opens',
                 ],
             };
             return lyricForm(seed).map(name => ({ section: name, lines: banks[name] || banks['Verse 1'] }));
@@ -2211,12 +2236,15 @@
 
         // Song forms. The seed picks one, so the words land in a different shape
         // each time instead of always chorus / verse / verse / bridge.
+        // Six or seven sections of six lines each: about two and a half minutes
+        // of singing, so a three-minute render has words for the whole way
+        // through instead of handing the last minute to the band.
         const LYRIC_FORMS = [
-            ['Chorus', 'Verse 1', 'Chorus', 'Verse 2', 'Bridge'],
-            ['Verse 1', 'Chorus', 'Verse 2', 'Chorus'],
-            ['Chorus', 'Verse 1', 'Verse 2', 'Chorus'],
-            ['Verse 1', 'Verse 2', 'Chorus', 'Bridge'],
-            ['Chorus', 'Verse 1', 'Bridge', 'Verse 2', 'Chorus'],
+            ['Chorus', 'Verse 1', 'Chorus', 'Verse 2', 'Bridge', 'Chorus'],
+            ['Verse 1', 'Chorus', 'Verse 2', 'Chorus', 'Verse 3', 'Chorus'],
+            ['Chorus', 'Verse 1', 'Verse 2', 'Chorus', 'Verse 3', 'Verse 1', 'Chorus'],
+            ['Verse 1', 'Verse 2', 'Chorus', 'Verse 3', 'Bridge', 'Chorus'],
+            ['Chorus', 'Verse 1', 'Bridge', 'Verse 2', 'Chorus', 'Verse 3'],
         ];
 
         function lyricForm(seed) {
@@ -2229,6 +2257,7 @@
             if (lowered.includes('chorus') || lowered.includes('hook')) return 'chorus';
             if (lowered.includes('bridge')) return 'bridge';
             if (/verse\s*2|verse\s*two/.test(lowered)) return 'verse2';
+            if (/verse\s*3|verse\s*three/.test(lowered)) return 'verse3';
             return 'verse1';
         }
 
@@ -2701,7 +2730,18 @@
         // What the song is built from: the search you just ran when it produced
         // genre evidence, otherwise the whole index. The music type therefore
         // follows what you searched for.
+        // Starting the list somewhere else each press. The ranked order is by how
+        // often a genre appears, so taking the top rows every time meant the same
+        // leading genre and the same first words whatever the seed did - the seed
+        // only ever moved tempo and mood.
+        function rotated(list, by) {
+            if (!list.length) return list;
+            const at = ((by % list.length) + list.length) % list.length;
+            return list.slice(at).concat(list.slice(0, at));
+        }
+
         function songSource() {
+            const turn = window._songSourceTurn || 0;
             const recent = window._lastResults || [];
             const genres = new Map();
             const words = new Map();
@@ -2714,14 +2754,15 @@
                 });
             });
 
-            const ranked = [...genres.entries()].sort((a, b) => b[1] - a[1]);
+            const ranked = rotated([...genres.entries()].sort((a, b) => b[1] - a[1]), turn);
             if (ranked.length >= 2) {
                 return {
                     scope: 'search',
                     label: currentQuery ? `the ${recent.length.toLocaleString()} results for “${currentQuery}”` : `the ${recent.length} results`,
                     total: recent.length,
                     genres: ranked.slice(0, 4).map(([name, count]) => ({ name, count })),
-                    words: [...words.entries()].sort((a, b) => b[1] - a[1]).slice(0, 32).map(([word]) => word),
+                    words: rotated([...words.entries()].sort((a, b) => b[1] - a[1]), turn * 3)
+                        .slice(0, 32).map(([word]) => word),
                 };
             }
             const library = librarySummary();
@@ -2729,24 +2770,57 @@
                 scope: 'library',
                 label: 'the whole library',
                 total: library.total,
-                genres: library.genres,
-                words: library.words,
+                genres: rotated(library.genres, turn),
+                words: rotated(library.words, turn * 3),
             };
         }
 
-        // A prompt in the shape the music model expects: genre, tempo, mood,
-        // and the words this library keeps repeating.
+        // What "well produced" means for the lead genre. Every prompt used to ask
+        // for "warm analog production", which is tape: a dubstep render came back
+        // soft and lo-fi whatever the genre said, because the prompt was asking
+        // for the wrong character. Genres that want tape still get it.
+        const GENRE_PRODUCTION = {
+            dubstep: 'clean modern master, heavy sub bass, wobbling growl lead, big gated snare',
+            riddim: 'clean and loud, clipped square bass stabs, dry punchy drums',
+            techno: 'clean mix, driving analog kick, no tape saturation',
+            house: 'warm but clean mix, round bass, crisp shuffled hats',
+            'drum and bass': 'clean and loud, reese bass, snappy edited breaks',
+            jungle: 'clean and loud, chopped breaks, deep sub bass',
+            trap: 'clean modern master, 808 sub, crisp hi-hats',
+            trance: 'clean and bright, wide supersaw chords, punchy kick',
+            garage: 'clean mix, rubbery bass, shuffled two-step drums',
+            'hip hop': 'warm analog, dusty boom-bap drums, vinyl texture',
+            'lo-fi': 'tape hiss, soft transients, deliberately muffled',
+            ambient: 'wide and clean, no drums, long reverb tails',
+            dub: 'long tape echo, deep low end, spacious',
+            reggae: 'warm and spacious, rounded bass, dry vocal',
+        };
+
+        // A prompt in the shape the music model expects: genre, tempo, mood, the
+        // instruments that genre is made of, and how it should be produced.
         function modelPrompt(summary, seed) {
             const lead = summary.genres[0]
                 ? (REMIX_STYLES[summary.genres[0].name] || REMIX_NEUTRAL)
                 : REMIX_NEUTRAL;
-            const genres = summary.genres.slice(0, 3).map(genre => genre.name).join(', ');
+            const leadName = summary.genres[0] ? summary.genres[0].name : '';
+            // The lead genre names the song. The others are a hint at the edge of
+            // it, not three equal halves: "dubstep, techno, house song" is how a
+            // dubstep request came back sounding like neither.
+            const also = summary.genres.slice(1, 3).map(genre => genre.name).filter(Boolean);
             return [
-                genres ? `${genres} song` : 'electronic song',
+                leadName ? `${leadName} song` : 'electronic song',
+                also.length ? `with touches of ${also.join(' and ')}` : '',
                 `${libraryTempo(summary, seed)} bpm`,
                 lead.mood,
+                lead.instruments.join(', '),
                 summary.words.length ? `themes of ${summary.words.slice(0, 4).join(', ')}` : '',
-                'warm analog production, mastered, wide stereo, clear emotional lead vocal',
+                (GENRE_PRODUCTION[leadName] || 'clean modern production, mastered, wide stereo')
+                    + ', clear emotional lead vocal',
+                // Layers, named: the model arranges what it is told about, and a
+                // bare genre gives it one texture for three minutes.
+                'arrangement in layers: a chord bed underneath, a counter-melody '
+                    + 'answering the lead, backing harmonies, percussion patterns that '
+                    + 'change between sections, a bass line that moves under the chorus',
             ].filter(Boolean).join(', ');
         }
 
@@ -2771,6 +2845,24 @@
         function rememberEdgeModelOff() {
             window.edgeSongModel = false;
             try { localStorage.setItem('edgeModelOff', String(Date.now())); } catch (err) {}
+        }
+
+        // A finished song is served by the local service over http://127.0.0.1
+        // while this page arrives over https. Chrome lets fetch reach a loopback
+        // address, but an <audio src> pointing at one is reported as mixed
+        // content - "requested an insecure element ... not upgraded to HTTPS
+        // because the URL's host is an IP address" - on every finished song. It
+        // was a warning rather than a block, but it read like a failure, so the
+        // bytes are fetched first and played from a blob URL, which the page owns.
+        async function localAudioBlob(url) {
+            if (!/^http:\/\/(127\.0\.0\.1|localhost)(:|\/)/i.test(url)) return url;
+            try {
+                const response = await fetchBounded(url, {}, 180000);
+                if (!response.ok) return url;
+                return URL.createObjectURL(await response.blob());
+            } catch (err) {
+                return url;   // the element can still try the address itself
+            }
         }
 
         async function fetchBounded(url, options, ms) {
@@ -2812,10 +2904,13 @@
 
         async function requestModelSong(summary, lyrics, seed) {
             const lyricText = lyrics.map(part => part.lines.join('\n')).join('\n\n');
-            // 90 s carries three verses, three choruses and a bridge; 16 steps
-            // keeps the render near six minutes on the 8 GB card, where every
-            // step costs about eleven seconds as the weights page in and out.
-            const payload = { prompt: modelPrompt(summary, seed), lyrics: lyricText, seconds: 90, steps: 16 };
+            // Between 1:30 and 3:00, picked by the seed: a minute and a half only
+            // fits three verses and a couple of choruses, and the form now carries
+            // three verses, a bridge and a chorus that comes back.
+            const seconds = 90 + 15 * (Math.abs(seed) % 7);
+            // 24 steps rather than 16: the render measures about a second a step
+            // here, so the detail is affordable and the layers land more cleanly.
+            const payload = { prompt: modelPrompt(summary, seed), lyrics: lyricText, seconds, steps: 24 };
 
             // A model address pasted into the page is remembered in this
             // browser, so a tunnel URL that changes on every restart never
@@ -3002,6 +3097,9 @@
                     ? window._nextSongSeed
                     : Math.floor(Math.random() * 1000000);
                 window._nextSongSeed = undefined;
+                // One turn per press, so the next song leads with a different
+                // genre and different words instead of the same leading rows.
+                window._songSourceTurn = (window._songSourceTurn || 0) + 1;
                 const summary = songSource();
                 let lyrics = libraryLyrics(summary, seed);
                 let lyricSource = 'written by the page';
@@ -3155,9 +3253,10 @@
 
                 // A real model may answer while the band is already playing. When it
                 // does, the sung track replaces the audio and the labels say so.
-                modelPromise.then(swapped => {
+                modelPromise.then(async swapped => {
                     if (!swapped || !swapped.audio) return;
-                    audio.src = swapped.audio;
+                    const source = await localAudioBlob(swapped.audio);
+                    audio.src = source;
                     audio.autoplay = true;
                     head.textContent = head.textContent.replace(' · seed', ' · sung by the model · seed');
                     note.textContent = (summary.genres.length
@@ -3165,7 +3264,7 @@
                         : `Built from ${summary.label}. `)
                         + `Composed by ${swapped.model || 'the song model'} from the lyrics below, which it sings.`;
                     saveAudio.textContent = 'Save the song';
-                    saveAudio.href = swapped.audio;
+                    saveAudio.href = source;
                     saveAudio.download = 'library-song.mp3';
                 });
             } catch (err) {
