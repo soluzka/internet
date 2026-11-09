@@ -867,19 +867,109 @@
             return indexRequest;
         }
 
+        // Every match, not the first page of them. The summary has always counted
+        // all of them, so showing sixty of 332 read as lost results. Pages of 200
+        // are fetched until the count is reached, capped at 800 so a one-letter
+        // query cannot ask for the whole library in cards.
+        async function apiSearchAll(query) {
+            const PAGE = 200;
+            const MAX_ROWS = 800;
+            const first = await apiSearch(query, 0, PAGE, true);
+            const results = first.results.slice();
+            const total = first.total;
+            let stats = first.stats;
+            let offset = results.length;
+
+            while (offset < Math.min(total, MAX_ROWS)) {
+                const page = await apiSearch(query, offset, PAGE, false);
+                if (!page.results.length) break;
+                page.results.forEach(row => results.push(row));
+                if (page.stats) stats = page.stats;
+                offset = results.length;
+            }
+
+            return { results, total, discovered: first.discovered, stats };
+        }
+
+        // YouTube is only reachable from this machine: YouTube refuses a Worker's
+        // datacenter address, and the public YouTube mirrors are refused too. The
+        // downloader service on this PC runs yt-dlp, so the page asks it for a
+        // search listing and hands what it finds to the Worker to be stored. With
+        // no service running the connection is refused in milliseconds and the
+        // database search carries on exactly as before.
+        async function localDiscover(query) {
+            try {
+                const listing = await fetchBounded('http://127.0.0.1:8080/api/discover', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query: query, limit: 20 }),
+                }, 30000);
+                if (!listing.ok) return { added: 0, videos: [] };
+                const found = await listing.json();
+                if (!found || !Array.isArray(found.videos) || !found.videos.length) {
+                    return { added: 0, videos: [] };
+                }
+
+                // The listing is shown whether or not it could be stored: the
+                // database may be unable to accept writes at this moment, and a
+                // video that was found is worth showing anyway.
+                let added = 0;
+                try {
+                    const stored = await fetchBounded('api/ingest', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ videos: found.videos }),
+                    }, 15000);
+                    if (stored.ok) {
+                        const result = await stored.json();
+                        added = Number(result && result.added) || 0;
+                    }
+                } catch (err) { /* shown now, stored when the database allows */ }
+                return { added: added, videos: found.videos };
+            } catch (err) {
+                return { added: 0, videos: [] };
+            }
+        }
+
         // Search the index where it lives. The Worker answers with the shape the
         // page already renders (u/t/d/th/du/s/c/tg), so nothing downstream had to
         // learn a second format; a page with no Worker behind it fails here and
         // falls back to the bundled file.
-        async function apiSearch(query) {
-            const url = 'api/search?q=' + encodeURIComponent(query) + '&limit=60&log=1';
+        async function apiSearch(query, offset = 0, limit = 200, log = false) {
+            // discover=1 asks the Worker to look for videos it has never seen
+            // before answering, so searching something new grows the library.
+            // discover=1 only on the real search, not on every follow-on page:
+            // one search asking four times for new videos was four Dailymotion
+            // round trips, and it kept a paged search out of the edge cache.
+            const url = 'api/search?q=' + encodeURIComponent(query)
+                + '&limit=' + limit + '&offset=' + offset
+                + (log ? '&discover=1&log=1' : '');
             const response = await fetchBounded(url, {}, 15000);
             if (!response.ok) throw new Error('search unavailable (' + response.status + ')');
             const doc = await response.json();
             if (!doc || !Array.isArray(doc.videos)) throw new Error('search returned an unexpected shape');
+            const total = Number(doc.total) || 0;
+            // The database answers in the same compact keys the JSON index uses
+            // (u/t/d/th/du/s/tg), so it has to be put into the shape the card
+            // builder reads - url, title, thumbnail, duration - exactly like
+            // localSearch does. Passing the compact rows straight through made
+            // every card blank, every source "Unknown", and openPlayer("", "").
+            const results = doc.videos.map(row => ({
+                url: row.u,
+                title: row.t,
+                description: row.d,
+                thumbnail: row.th,
+                duration: row.du,
+                source: row.s,
+                // No relevance figure: the database orders by clicks, so a made-up
+                // percentage would be decoration pretending to be a measurement.
+                score: 0,
+                genre: bundledGenre(row.g),
+            }));
             return {
-                results: doc.videos,
-                total: Number(doc.total) || 0,
+                results,
+                total,
+                discovered: Number(doc.discovered) || 0,
                 stats: doc.library ? {
                     total_videos: Number(doc.library.total_videos) || 0,
                     total_searches: Number(doc.library.total_searches) || 0,
@@ -1190,9 +1280,16 @@
 
                 const finish = (found) => {
                     const results = found.results;
+                    const extras = [];
+                    if (found.discovered) {
+                        extras.push(`discovery added ${found.discovered} new video${found.discovered === 1 ? '' : 's'}`);
+                    }
+                    if (found.total > results.length) {
+                        extras.push(`showing the first ${results.length.toLocaleString()} of ${found.total.toLocaleString()}`);
+                    }
                     searchBtn.disabled = false;
                     searchBtn.textContent = 'Search';
-                    aiStatus.innerHTML = renderSummary(query, found.total, indexStats ? indexStats.total_videos : 0, []);
+                    aiStatus.innerHTML = renderSummary(query, found.total, indexStats ? indexStats.total_videos : 0, extras);
                     if (indexStats) updateStats(indexStats);
 
                     // Remove empty state and show results
@@ -1216,22 +1313,68 @@
                 // request, sorted by what people clicked, and the search is logged
                 // where the library lives. The bundled JSON is only the fallback
                 // for a copy of the page with no database behind it.
-                apiSearch(query)
-                    .then(found => {
+                localDiscover(query)
+                    .catch(() => ({ added: 0, videos: [] }))
+                    .then(extra => apiSearchAll(query)
+                        .then(found => ({ found: found, extra: extra }))
+                        .catch(() => loadIndex()
+                            .then(() => ({ found: localSearch(query), extra: extra }))))
+                    .then(pair => {
+                        const found = pair.found;
+                        const extra = pair.extra || { added: 0, videos: [] };
                         if (found.stats) indexStats = found.stats;
+
+                        // What the machine found on YouTube is shown next to the
+                        // index results, not only stored for later: the database
+                        // only holds it once it can be read again, and waiting for
+                        // that would hide today's finds.
+                        const merged = mergeFound(found.results, extra.videos || []);
+                        found.total = found.total + merged.added;
+                        found.results = merged.results;
+                        if (extra.added) {
+                            found.discovered = (Number(found.discovered) || 0) + extra.added;
+                            if (indexStats) {
+                                indexStats = Object.assign({}, indexStats, {
+                                    total_videos: (indexStats.total_videos || 0) + extra.added,
+                                });
+                            }
+                        }
                         finish(found);
                     })
-                    .catch(() => loadIndex()
-                        .then(() => finish(localSearch(query)))
-                        .catch(err => {
-                            searchBtn.disabled = false;
-                            searchBtn.textContent = 'Search';
-                            aiStatus.innerHTML = '';
-                            setConnection('offline');
-                            showToast('error', 'Search Error',
-                                'The search server is not reachable and the bundled index could not be loaded. Reload the page to retry.');
-                        }));
+                    .catch(err => {
+                        searchBtn.disabled = false;
+                        searchBtn.textContent = 'Search';
+                        aiStatus.innerHTML = '';
+                        setConnection('offline');
+                        showToast('error', 'Search Error',
+                            'The search server is not reachable and the bundled index could not be loaded. Reload the page to retry.');
+                    });
             }
+        }
+
+        // Folds videos found elsewhere into the list already on its way to the
+        // screen. A link the index already has is skipped: the same video from two
+        // searches is still one card.
+        function mergeFound(results, extra) {
+            if (!extra.length) return { results: results, added: 0 };
+            const known = new Set(results.map(row => String(row.url || '').toLowerCase()));
+            const fresh = [];
+            extra.forEach(video => {
+                const key = String((video && video.url) || '').toLowerCase();
+                if (!key || known.has(key)) return;
+                known.add(key);
+                fresh.push({
+                    url: video.url,
+                    title: video.title,
+                    description: video.description || '',
+                    thumbnail: video.thumbnail || '',
+                    duration: video.duration || 'Unknown',
+                    source: video.source || 'YouTube',
+                    score: 1,
+                    genre: null,
+                });
+            });
+            return { results: fresh.concat(results), added: fresh.length };
         }
 
         // --- Results ---
@@ -1387,6 +1530,24 @@
         const REMIX_NEUTRAL = { bpm: 110, keys: ['A minor', 'D minor'], mood: 'open and curious, not yet committed to a scene', palette: 'ink black with one warm light',
             instruments: ['steady kick and rimshot', 'held chord bed', 'one melodic motif', 'room noise as texture'],
             sample: 'Choose one gesture from the original — a word, a chord, a hit — and build everything else around it.' };
+
+        // Genre names in the index are often compound - "reggae / dancehall",
+        // "rock / metal", "drum and bass / jungle". Looking those up as one key
+        // always missed, so the song designer fell back to its neutral style and
+        // a reggae search was scored as "open and curious, not yet committed to a
+        // scene". The first part with a style of its own is the one that names it.
+        function styleFor(name) {
+            const key = String(name || '').toLowerCase().trim();
+            if (REMIX_STYLES[key]) return { key: key, style: REMIX_STYLES[key] };
+            const parts = key.split(/\s*\/\s*|\s*&\s*|,/).map(part => part.trim()).filter(Boolean);
+            for (const part of parts) {
+                if (REMIX_STYLES[part]) return { key: part, style: REMIX_STYLES[part] };
+            }
+            // "drum and bass / jungle" also arrives with "and" spelled out.
+            const loose = key.replace(/\s+and\s+/g, ' ');
+            if (REMIX_STYLES[loose]) return { key: loose, style: REMIX_STYLES[loose] };
+            return { key: key, style: REMIX_NEUTRAL };
+        }
 
         // Words that say nothing about the content; dropped before the theory.
         const REMIX_NOISE = new Set(['official', 'video', 'audio', 'lyrics', 'lyric', 'hd', 'hq', 'full', 'new', 'the', 'and', 'with', 'from', 'that', 'this', 'for', 'you', 'your', 'feat', 'ft', 'prod', 'remix', 'edit', 'clip', 'music']);
@@ -1941,13 +2102,13 @@
             // apply to everything, so a dubstep song came out at 98 bpm and a
             // drum and bass one at 172: the prompt said the genre and the render
             // disagreed with it.
-            const known = genres.filter(genre => REMIX_STYLES[genre.name]);
+            const known = genres.filter(genre => styleFor(genre.name).style !== REMIX_NEUTRAL);
             if (known.length) {
                 let weighted = 0;
                 let weight = 0;
                 known.forEach((genre, index) => {
                     const share = 1 / (index + 1);
-                    weighted += REMIX_STYLES[genre.name].bpm * share;
+                    weighted += styleFor(genre.name).style.bpm * share;
                     weight += share;
                 });
                 // A few bpm either way, not thirty.
@@ -2812,10 +2973,9 @@
         // A prompt in the shape the music model expects: genre, tempo, mood, the
         // instruments that genre is made of, and how it should be produced.
         function modelPrompt(summary, seed) {
-            const lead = summary.genres[0]
-                ? (REMIX_STYLES[summary.genres[0].name] || REMIX_NEUTRAL)
-                : REMIX_NEUTRAL;
             const leadName = summary.genres[0] ? summary.genres[0].name : '';
+            const leadStyle = styleFor(leadName);
+            const lead = leadStyle.style;
             // The lead genre names the song. The others are a hint at the edge of
             // it, not three equal halves: "dubstep, techno, house song" is how a
             // dubstep request came back sounding like neither.
@@ -2827,7 +2987,7 @@
                 lead.mood,
                 lead.instruments.join(', '),
                 summary.words.length ? `themes of ${summary.words.slice(0, 4).join(', ')}` : '',
-                (GENRE_PRODUCTION[leadName] || 'clean modern production, mastered, wide stereo')
+                (GENRE_PRODUCTION[leadStyle.key] || 'clean modern production, mastered, wide stereo')
                     + ', clear emotional lead vocal',
                 // Layers, named: the model arranges what it is told about, and a
                 // bare genre gives it one texture for three minutes.
@@ -3570,7 +3730,33 @@
         }
 
         // --- Video Player ---
+        // Opening a video is the only signal the site has about what is worth
+        // showing. The count it increments is the same one the cards are ordered
+        // by, and the pair goes into learned_preferences, so the library learns
+        // from what was actually watched instead of sitting at the number it was
+        // imported with.
+        function recordClick(url, title) {
+            if (!url) return;
+            fetchBounded('api/click', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: url, title: title || '', query: currentQuery || '' }),
+            }, 8000)
+                .then(response => (response.ok ? response.json() : null))
+                .then(doc => {
+                    if (!doc || !doc.library) return;
+                    indexStats = {
+                        total_videos: Number(doc.library.total_videos) || (indexStats ? indexStats.total_videos : 0),
+                        total_searches: Number(doc.library.total_searches) || (indexStats ? indexStats.total_searches : 0),
+                        total_clicks: Number(doc.library.total_clicks) || 0,
+                    };
+                    updateStats(indexStats);
+                })
+                .catch(() => { /* a click that cannot be recorded must not block the player */ });
+        }
+
         function openPlayer(url, title, desc) {
+            recordClick(url, title);
             const overlay = document.getElementById('playerOverlay');
             const video = document.getElementById('playerVideo');
             const titleEl = document.getElementById('playerTitle');
@@ -4206,6 +4392,39 @@
             document.getElementById('statSearches').textContent = format(stats.total_searches);
             document.getElementById('statClicks').textContent = format(stats.total_clicks);
         }
+
+        // The counters are read once on load. They used to stay at zero until the
+        // first search, because the only thing that ever fetched the totals was a
+        // search itself - which reads as "nothing is in the database".
+        //
+        // A database that answers zero is not an empty library: it is a database
+        // that could not be read, and showing 0 next to a search box made the
+        // whole thing look broken. The bundled index still holds the real
+        // numbers, so it answers instead.
+        (async () => {
+            let fromDatabase = false;
+            try {
+                const response = await fetchBounded('api/search?q=', {}, 8000);
+                if (response.ok) {
+                    const doc = await response.json();
+                    if (doc && doc.library && Number(doc.library.total_videos) > 0) {
+                        indexStats = {
+                            total_videos: Number(doc.library.total_videos) || 0,
+                            total_searches: Number(doc.library.total_searches) || 0,
+                            total_clicks: Number(doc.library.total_clicks) || 0,
+                        };
+                        updateStats(indexStats);
+                        fromDatabase = true;
+                    }
+                }
+            } catch (err) { /* fall through to the bundled index */ }
+
+            if (!fromDatabase) {
+                loadIndex()
+                    .then(() => updateStats(indexStats))
+                    .catch(() => {});
+            }
+        })();
 
         // --- Connection state ---
         // Says where results are coming from: the live server, or the bundled

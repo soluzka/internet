@@ -35,6 +35,16 @@ const HEALTH_ROUTE = /^\/api\/health$/i;
 // used to download in full before it could show anything.
 const SEARCH_ROUTE = /^\/api\/search$/i;
 
+// One click on one video. This is how the library changes without a re-import:
+// the count the cards are ordered by goes up, and the pair of query and video is
+// kept in learned_preferences.
+const CLICK_ROUTE = /^\/api\/click$/i;
+
+// Videos found by the machine's own yt-dlp, handed up to be stored. YouTube is
+// the reason this exists: a Worker's address is refused by YouTube, so the
+// search that reaches it happens on the user's PC and only the result travels.
+const INGEST_ROUTE = /^\/api\/ingest$/i;
+
 // The music model cannot run here: it needs a GPU that a Worker does not have.
 // These paths exist so the page gets a straight answer instead of a 405 from
 // the static asset handler, and so an address can be supplied with SONG_API
@@ -66,7 +76,21 @@ export default {
     }
 
     if (SEARCH_ROUTE.test(url.pathname)) {
-      return searchIndex(env, url);
+      try {
+        return await cachedSearch(env, request, url);
+      } catch (err) {
+        // An uncaught throw here becomes a blank Cloudflare 500 with no clue in
+        // it. The reason is worth more than the tidiness.
+        return json({ error: String((err && err.message) || err) }, 500);
+      }
+    }
+
+    if (CLICK_ROUTE.test(url.pathname)) {
+      return recordClick(env, request);
+    }
+
+    if (INGEST_ROUTE.test(url.pathname)) {
+      return ingestVideos(env, request);
     }
 
     if (SONG_ROUTES.some((route) => route.test(url.pathname))) {
@@ -227,22 +251,62 @@ async function transcribe(request, env) {
 //
 // The page asks for thirty at a time and paints more as it scrolls; before this
 // it downloaded all 8,724 rows before it could show a single card.
+// The same words searched again within a minute - a retry, a voice repeat, a
+// reload - are answered from the edge cache instead of scanning the database
+// again. A search that logs itself, or one that discovers new videos, has a side
+// effect and is never cached.
+async function cachedSearch(env, request, url) {
+  const plain = request.method === 'GET'
+    && url.searchParams.get('log') !== '1'
+    && url.searchParams.get('discover') !== '1';
+  if (!plain) return searchIndex(env, url);
+
+  const cache = caches.default;
+  const key = new Request('https://search-cache.internal' + url.pathname + url.search, { method: 'GET' });
+  const hit = await cache.match(key);
+  if (hit) return hit;
+
+  const fresh = await searchIndex(env, url);
+  if (fresh.status === 200) {
+    const copy = new Response(fresh.body, {
+      status: fresh.status,
+      statusText: fresh.statusText,
+      headers: fresh.headers,
+    });
+    copy.headers.set('Cache-Control', 'public, max-age=60');
+    await cache.put(key, copy).catch(() => {});
+  }
+  return fresh;
+}
+
 async function searchIndex(env, url) {
   const query = (url.searchParams.get('q') || '').trim().slice(0, 120);
-  const limit = Math.min(60, Math.max(1, Number(url.searchParams.get('limit')) || 30));
+  // 200 a page, not 60: a query with 332 matches used to say "332 matches" and
+  // show sixty of them, because that is all one request returned.
+  const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 30));
+  const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
 
   if (!env.DB) {
     return json({ error: 'No video index is attached to this Worker.' }, 501);
   }
 
-  const library = await indexTotals(env);
   if (!query) {
-    return json({ query: '', total: 0, library, videos: [] });
+    return json({ query: '', total: 0, library: await indexTotals(env), discovered: 0, videos: [] });
   }
+
+  // A search is also how the library grows. Before counting, this asks
+  // Dailymotion's public API for the same words and inserts only the videos the
+  // table has never seen - so searching something new leaves the library larger
+  // than it was, which is what a discovery tool is for.
+  let discovered = 0;
+  if (url.searchParams.get('discover') === '1') {
+    discovered = await discoverVideos(env, query);
+  }
+  const library = await indexTotals(env);
 
   const terms = (query.toLowerCase().match(/[a-z0-9']+/g) || []).slice(0, 8);
   if (!terms.length) {
-    return json({ query, total: 0, library, videos: [] });
+    return json({ query, total: 0, library, discovered, videos: [] });
   }
 
   // LIKE wildcards inside a search term are escaped, so a term of "100%" is a
@@ -255,15 +319,19 @@ async function searchIndex(env, url) {
   const params = [];
   patterns.forEach((pattern) => params.push(pattern, pattern, pattern));
 
-  const counted = await env.DB.prepare(`SELECT COUNT(*) AS n FROM videos WHERE ${clause}`)
-    .bind(...params)
-    .first();
+  // Counting the matches is a full scan of the library (LIKE on three columns),
+  // so it is done once, on the first page. Pages after it only need rows: the
+  // page keeps the total from page one, and asking for it again on every one of
+  // four paged requests was four scans for one search.
+  const counted = offset > 0
+    ? null
+    : await env.DB.prepare(`SELECT COUNT(*) AS n FROM videos WHERE ${clause}`).bind(...params).first();
 
   const found = await env.DB.prepare(
-    'SELECT url, title, description, thumbnail, duration, source, click_count, tags '
+    'SELECT url, title, description, thumbnail, duration, source, click_count, tags, genre_json '
     + `FROM videos WHERE ${clause} `
-    + 'ORDER BY click_count DESC, relevance_score DESC, id DESC LIMIT ?'
-  ).bind(...params, limit).all();
+    + 'ORDER BY click_count DESC, relevance_score DESC, id DESC LIMIT ? OFFSET ?'
+  ).bind(...params, limit, offset).all();
 
   const videos = (found.results || []).map((row) => ({
     u: row.url,
@@ -274,35 +342,226 @@ async function searchIndex(env, url) {
     s: row.source,
     c: row.click_count,
     tg: row.tags,
+    // The inferred genre, as the JSON export carries it: {n: name, c: confidence}.
+    // It is the one column the database did not already have.
+    g: parseGenre(row.genre_json),
   }));
 
   // Only searches a person made are kept: log=1 is sent by the page, so a crawler
   // following the URL cannot fill the history with its own queries.
   if (url.searchParams.get('log') === '1') {
     try {
-      await env.DB.prepare(
-        'INSERT INTO search_history (query, result_count, searched_at) VALUES (?, ?, ?)'
-      ).bind(query, Number(counted && counted.n) || videos.length, Date.now() / 1000).run();
+      await env.DB.batch([
+        env.DB.prepare(
+          'INSERT INTO search_history (query, result_count, searched_at) VALUES (?, ?, ?)'
+        ).bind(query, Number(counted && counted.n) || videos.length, Date.now() / 1000),
+        bumpStats(env, 'total_searches', 1),
+      ]);
       library.total_searches += 1;
     } catch (err) { /* a full or missing table must not fail the search */ }
-  }
-
-  return json({ query, total: Number(counted && counted.n) || 0, library, videos });
+  }  return json({
+    query,
+    total: counted ? (Number(counted.n) || 0) : Number(videos.length) + offset,
+    library,
+    discovered,
+    videos,
+  });
 }
 
-async function indexTotals(env) {
+// Dailymotion's public API answers without a key or an account, and the library
+// is already mostly Dailymotion, so the thumbnails, durations and URLs arrive in
+// the same shape the existing rows use.
+const DISCOVER_API = 'https://api.dailymotion.com/videos';
+
+async function discoverVideos(env, query, limit = 20) {
+  let doc;
   try {
-    const videos = await env.DB.prepare('SELECT COUNT(*) AS n FROM videos').first();
-    const searches = await env.DB.prepare('SELECT COUNT(*) AS n FROM search_history').first();
-    const clicks = await env.DB.prepare('SELECT COALESCE(SUM(click_count), 0) AS n FROM videos').first();
+    const api = DISCOVER_API
+      + '?search=' + encodeURIComponent(query)
+      + '&fields=id,title,url,description,thumbnail_360_url,duration'
+      + '&sort=relevance&limit=' + limit;
+    const response = await fetch(api, { headers: { accept: 'application/json' } });
+    if (!response.ok) return 0;
+    doc = await response.json();
+  } catch (err) {
+    return 0;   // discovery failing must never fail the search
+  }
+
+  const found = Array.isArray(doc && doc.list) ? doc.list : [];
+  if (!found.length) return 0;
+
+  const statements = [];
+  const seen = new Set();
+  for (const row of found) {
+    const link = String(row.url || '').trim();
+    const title = String(row.title || '').trim();
+    if (!link || !title || seen.has(link)) continue;
+    seen.add(link);
+    statements.push(
+      env.DB.prepare(
+        'INSERT OR IGNORE INTO videos '
+        + '(url, title, description, thumbnail, duration, source, platform, discovered_at, '
+        + ' click_count, relevance_score, tags) '
+        + "VALUES (?, ?, ?, ?, ?, 'Dailymotion', 'Dailymotion', ?, 0, 0, '')"
+      ).bind(
+        link,
+        title.slice(0, 300),
+        String(row.description || '').slice(0, 2000),
+        String(row.thumbnail_360_url || ''),
+        formatSeconds(row.duration),
+        Date.now() / 1000
+      )
+    );
+  }
+  if (!statements.length) return 0;
+
+  // meta.changes counts the rows INSERT OR IGNORE actually wrote: a video the
+  // library already had is ignored and not counted as new.
+  let added = 0;
+  try {
+    const results = await env.DB.batch(statements);
+    for (const result of results) {
+      added += Number((result.meta && result.meta.changes) || 0);
+    }
+  } catch (err) {
+    return 0;
+  }
+  return added;
+}
+
+function formatSeconds(value) {
+  const total = Math.round(Number(value) || 0);
+  if (!total) return 'Unknown';
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return minutes + ':' + String(seconds).padStart(2, '0');
+}
+
+async function ingestVideos(env, request) {
+  if (request.method === 'OPTIONS') return new Response(null, { status: 204 });
+  if (request.method !== 'POST') {
+    return json({ error: 'Send the videos as a POST body.' }, 405);
+  }
+  if (!env.DB) {
+    return json({ error: 'No video index is attached to this Worker.' }, 501);
+  }
+
+  const body = await request.json().catch(() => null);
+  const list = Array.isArray(body && body.videos) ? body.videos.slice(0, 40) : [];
+  if (!list.length) {
+    return json({ error: 'No videos were given.' }, 400);
+  }
+
+  const statements = [];
+  const seen = new Set();
+  for (const video of list) {
+    const link = String((video && video.url) || '').trim();
+    const title = String((video && video.title) || '').trim();
+    if (!/^https?:\/\//.test(link) || !title || seen.has(link)) continue;
+    seen.add(link);
+    const source = String((video.source) || 'YouTube').slice(0, 40);
+    statements.push(
+      env.DB.prepare(
+        'INSERT OR IGNORE INTO videos '
+        + '(url, title, description, thumbnail, duration, source, platform, discovered_at, '
+        + ' click_count, relevance_score, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, \'\')'
+      ).bind(
+        link,
+        title.slice(0, 300),
+        String(video.description || '').slice(0, 2000),
+        String(video.thumbnail || ''),
+        String(video.duration || 'Unknown'),
+        source,
+        source,
+        Date.now() / 1000
+      )
+    );
+  }
+  if (!statements.length) {
+    return json({ added: 0, library: await indexTotals(env) });
+  }
+
+  let added = 0;
+  try {
+    const results = await env.DB.batch(statements);
+    for (const result of results) added += Number((result.meta && result.meta.changes) || 0);
+    if (added) await bumpStats(env, 'total_videos', added).run();
+  } catch (err) {
+    return json({ error: 'Those videos could not be stored.' }, 500);
+  }
+  return json({ added, library: await indexTotals(env) });
+}
+
+async function recordClick(env, request) {
+  if (request.method === 'OPTIONS') return new Response(null, { status: 204 });
+  if (request.method !== 'POST') {
+    return json({ error: 'Send the click as a POST body.' }, 405);
+  }
+  if (!env.DB) {
+    return json({ error: 'No video index is attached to this Worker.' }, 501);
+  }
+
+  const body = await request.json().catch(() => null);
+  const videoUrl = String((body && body.url) || '').trim().slice(0, 400);
+  if (!videoUrl) {
+    return json({ error: 'No video was given.' }, 400);
+  }
+  const title = String((body && body.title) || '').slice(0, 300);
+  const query = String((body && body.query) || '').slice(0, 120);
+
+  try {
+    await env.DB.batch([
+      env.DB.prepare('UPDATE videos SET click_count = click_count + 1 WHERE url = ?').bind(videoUrl),
+      env.DB.prepare(
+        'INSERT INTO learned_preferences (query, clicked_url, clicked_title, learned_at) VALUES (?, ?, ?, ?)'
+      ).bind(query, videoUrl, title, Date.now() / 1000),
+      bumpStats(env, 'total_clicks', 1),
+    ]);
+  } catch (err) {
+    return json({ error: 'The click could not be recorded.' }, 500);
+  }
+
+  return json({ library: await indexTotals(env) });
+}
+
+function parseGenre(text) {
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && parsed.n ? parsed : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+// The three counters used to be three full-table aggregates: COUNT over the
+// videos, COUNT over the history, and SUM over every click_count. On a library
+// of 8,756 rows that is about 17,500 rows read every single time the page asked
+// for its numbers - and the counters are read on page load, on every search and
+// again after every click. That is what exhausted D1's free daily row-read limit
+// and made the page show zeroes and the search answer 500. One row now holds the
+// totals, and the write paths keep it current.
+async function indexTotals(env) {
+  if (!env.DB) return { total_videos: 0, total_searches: 0, total_clicks: 0 };
+  try {
+    const row = await env.DB.prepare(
+      'SELECT total_videos, total_searches, total_clicks FROM library_stats WHERE id = 1'
+    ).first();
     return {
-      total_videos: Number(videos && videos.n) || 0,
-      total_searches: Number(searches && searches.n) || 0,
-      total_clicks: Number(clicks && clicks.n) || 0,
+      total_videos: Number(row && row.total_videos) || 0,
+      total_searches: Number(row && row.total_searches) || 0,
+      total_clicks: Number(row && row.total_clicks) || 0,
     };
   } catch (err) {
     return { total_videos: 0, total_searches: 0, total_clicks: 0 };
   }
+}
+
+// Keeps the counters honest without ever scanning the table again.
+function bumpStats(env, field, amount) {
+  if (!env.DB) return null;
+  return env.DB.prepare(`UPDATE library_stats SET ${field} = ${field} + ? WHERE id = 1`)
+    .bind(amount);
 }
 
 function json(body, status) {

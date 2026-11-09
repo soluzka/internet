@@ -243,6 +243,88 @@ def health():
     })
 
 
+@app.route('/api/discover', methods=['POST', 'OPTIONS'])
+def api_discover():
+    """Find videos for a search term, without downloading any of them.
+
+    The deployed page cannot search YouTube itself: a Worker runs on a datacenter
+    address that YouTube refuses, and the public mirrors (Invidious, Piped) answer
+    403 from there as well. This machine can, because yt-dlp here looks like a
+    browser on a home connection. So the page asks this service for the list and
+    sends what it finds to the site's database.
+
+    extract_flat means yt-dlp reads the search page only: no per-video requests,
+    no media, about a second for twenty results.
+    """
+    if request.method == 'OPTIONS':
+        return ('', 204)
+
+    data = request.get_json(silent=True) or {}
+    query = (data.get('query') or '').strip()[:120]
+    if not query:
+        return jsonify({'error': 'No search term given'}), 400
+    try:
+        limit = int(data.get('limit') or 20)
+    except (TypeError, ValueError):
+        limit = 20
+    limit = max(1, min(30, limit))
+
+    options = {
+        'quiet': True,
+        'no_warnings': True,
+        'skip_download': True,
+        'extract_flat': True,
+        'socket_timeout': 20,
+        'extractor_args': {'youtube': {'skip': ['dash', 'hls']}},
+    }
+    cookies = _cookie_path()
+    if cookies:
+        options['cookiefile'] = cookies
+
+    try:
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info('ytsearch%d:%s' % (limit, query), download=False)
+    except Exception as exc:  # noqa: BLE001 - reported to the page as text
+        return jsonify({'error': _friendly_error(str(exc), query)}), 502
+
+    videos = []
+    for entry in (info or {}).get('entries') or []:
+        if not entry:
+            continue
+        link = entry.get('webpage_url') or entry.get('url') or ''
+        title = (entry.get('title') or '').strip()
+        if not link.startswith('http') or not title:
+            continue
+        videos.append({
+            'url': link,
+            'title': title[:300],
+            'description': (entry.get('description') or '')[:500],
+            'thumbnail': _best_thumbnail(entry),
+            'duration': _clock(entry.get('duration')),
+            'source': entry.get('ie_key') or 'YouTube',
+        })
+
+    return jsonify({'query': query, 'count': len(videos), 'videos': videos})
+
+
+def _best_thumbnail(entry: Dict) -> str:
+    thumbnails = entry.get('thumbnails') or []
+    if thumbnails:
+        # The list runs smallest to largest, so the last one is the readable one.
+        return str(thumbnails[-1].get('url') or '')
+    return str(entry.get('thumbnail') or '')
+
+
+def _clock(seconds) -> str:
+    try:
+        total = int(seconds or 0)
+    except (TypeError, ValueError):
+        return 'Unknown'
+    if total <= 0:
+        return 'Unknown'
+    return '%d:%02d' % (total // 60, total % 60)
+
+
 @app.route('/api/download', methods=['POST', 'OPTIONS'])
 def api_download():
     if request.method == 'OPTIONS':
