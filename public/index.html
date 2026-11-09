@@ -195,6 +195,16 @@
         }
         .top-btn:hover { background: rgba(0, 206, 201, 0.22); }
         .top-btn:disabled { opacity: 0.6; cursor: default; }
+        /* The shared sync code, always on screen: pressing it copies the code and
+           saves the current search under it. */
+        .sync-chip {
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            letter-spacing: 0.06em;
+            background: rgba(110, 118, 129, 0.16);
+            border-color: rgba(110, 118, 129, 0.5);
+            color: #c9d1d9;
+        }
+        .sync-chip:hover { background: rgba(110, 118, 129, 0.28); }
         .search-btn {
             background: var(--accent);
             border: none;
@@ -840,6 +850,8 @@
                     title="The most-watched videos for these words, or the contents of a playlist link">Top 100</button>
             <button class="top-btn" id="syncBtn" onclick="showSync()"
                     title="Your sync code: the same saved search on another device">Sync</button>
+            <button class="top-btn sync-chip" id="syncChip" onclick="syncNow()"
+                    title="The code every device shares. Press to copy it and save this search under it.">Code</button>
         </div>
         <div class="ai-status" id="aiStatus"></div>
         <div class="voice-transcript" id="voiceTranscript"></div>
@@ -3933,8 +3945,15 @@
             if (document.visibilityState === 'hidden') flushClicks();
         });
 
-        // Put the last search back as soon as the script is ready.
-        setTimeout(() => {
+        // Put the last search back as soon as the script is ready, after folding any
+        // older sync code this browser still carries into the shared one.
+        setTimeout(async () => {
+            try {
+                if (typeof migrateSyncCode === 'function') await migrateSyncCode();
+            } catch (err) { /* the old code cannot be reached: carry on with what is here */ }
+            try {
+                if (typeof setSyncLabel === 'function') setSyncLabel();
+            } catch (err) {}
             try {
                 if (typeof restoreSession === 'function') restoreSession();
             } catch (err) { /* a failed restore must not stop the page */ }
@@ -4009,17 +4028,17 @@
         // A code that can be typed on another device. Browser storage never leaves
         // its browser, and this site has no accounts, so this short string is the
         // only thing that can carry a saved search from one machine to another.
-        function makeSyncCode() {
-            const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-            const pick = () => alphabet[Math.floor(Math.random() * alphabet.length)];
-            return pick() + pick() + pick() + '-' + pick() + pick() + pick();
-        }
+        //
+        // Every device starts on the same code, so nothing has to be typed to be in
+        // sync, and that code keeps one record: each sync overwrites what is stored
+        // under it instead of leaving older copies behind.
+        const SHARED_SYNC_CODE = 'MAIN-1';
 
         function syncCode() {
             let code = '';
             try { code = localStorage.getItem('syncCode') || ''; } catch (err) { /* private mode */ }
             if (!code) {
-                code = makeSyncCode();
+                code = SHARED_SYNC_CODE;
                 try { localStorage.setItem('syncCode', code); } catch (err) { /* kept in memory only */ }
             }
             return code;
@@ -4053,13 +4072,84 @@
                 localStorage.setItem(SESSION_KEY, JSON.stringify(payload));
             } catch (err) { /* storage full: the search simply is not kept here */ }
 
-            // And to the server, under this device's code, so another device can
-            // pick it up. A failure here is not worth interrupting anything.
-            fetchBounded('api/sync?code=' + encodeURIComponent(syncCode()), {
+            // And to the server, under the sync code, so another device can pick it
+            // up. The same code is written every time, so the record is overwritten
+            // rather than piling up copies. A failure here is not worth interrupting
+            // anything.
+            pushSession(payload);
+        }
+
+        function pushSession(payload) {
+            const body = payload || null;
+            if (!body) return Promise.resolve(false);
+            return fetchBounded('api/sync?code=' + encodeURIComponent(syncCode()), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ payload: JSON.stringify(payload) }),
-            }, 8000).catch(() => {});
+                body: JSON.stringify({ payload: JSON.stringify(body) }),
+            }, 8000)
+                .then(response => response.ok)
+                .catch(() => false);
+        }
+
+        function localSession() {
+            try { return JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); } catch (err) { return null; }
+        }
+
+        // A browser that synced before the shared code existed still follows its own
+        // random code and would never meet the others. This moves it onto the shared
+        // code once, carrying whichever search is newer: the copy stored under the old
+        // code, or the one in this browser. The old code is remembered so nothing has
+        // to be guessed about where it came from.
+        async function migrateSyncCode() {
+            let code = '';
+            try { code = localStorage.getItem('syncCode') || ''; } catch (err) { return null; }
+            if (!code || code === SHARED_SYNC_CODE) return null;
+
+            let previous = null;
+            try {
+                const response = await fetchBounded(
+                    'api/sync?code=' + encodeURIComponent(code), {}, 8000);
+                if (response.ok) {
+                    const doc = await response.json();
+                    if (doc && doc.payload) previous = JSON.parse(doc.payload);
+                }
+            } catch (err) { /* unreadable: the local search is carried instead */ }
+
+            try { localStorage.setItem('syncCodePrev', code); } catch (err) {}
+            try { localStorage.setItem('syncCode', SHARED_SYNC_CODE); } catch (err) {}
+
+            const local = localSession();
+            const carry = (previous && (!local || (local.at || 0) < (previous.at || 0)))
+                ? previous
+                : local;
+            if (!carry || !carry.query || !Array.isArray(carry.results)) return null;
+            try { localStorage.setItem(SESSION_KEY, JSON.stringify(carry)); } catch (err) {}
+            // Written under the shared code now, so the other devices see it.
+            await pushSession(carry);
+            return carry;
+        }
+
+        function setSyncLabel() {
+            const chip = document.getElementById('syncChip');
+            if (chip) chip.textContent = 'Code ' + syncCode();
+        }
+
+        // The code is shown on the page, so it is available at every sync without
+        // being remembered or typed: pressing it copies the code and writes this
+        // device's search under it.
+        async function syncNow() {
+            const code = syncCode();
+            try { await navigator.clipboard.writeText(code); } catch (err) {}
+            const local = localSession();
+            const saved = local ? await pushSession(local) : false;
+            showToast(
+                saved ? 'info' : 'error',
+                'Sync code ' + code,
+                saved
+                    ? 'Copied, and this search is saved under it - every sync overwrites that one copy.'
+                    : 'Copied, but the server could not be reached to save under it.'
+            );
+            setSyncLabel();
         }
 
         function applySession(saved) {
@@ -4095,7 +4185,12 @@
                 const saved = JSON.parse(doc.payload);
                 let local = null;
                 try { local = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); } catch (err) {}
-                if (local && (local.at || 0) >= (saved.at || 0)) return false;
+                // One record, newest wins: if this browser is the newer one, its
+                // search is written over the stored copy instead of being ignored.
+                if (local && (local.at || 0) >= (saved.at || 0)) {
+                    pushSession(local);
+                    return false;
+                }
                 try { localStorage.setItem(SESSION_KEY, JSON.stringify(saved)); } catch (err) {}
                 return applySession(saved);
             } catch (err) {
@@ -4103,15 +4198,16 @@
             }
         }
 
-        // The Sync button: show this device's code, or adopt another device's.
+        // The Sync button: show the code in use, or adopt another code.
         async function showSync() {
             const current = syncCode();
             const entered = window.prompt(
-                'Your sync code is ' + current + '\n\n'
-                + 'It carries the saved search and the counters that go with it:\n'
-                + 'library videos, searches run and clicks recorded.\n\n'
-                + 'Type it on another device to open them there.\n'
-                + 'To follow another device instead, type its code below.',
+                'The sync code is ' + current + '\n\n'
+                + 'Every device starts on this code, and every sync writes the saved\n'
+                + 'search and its counters (library videos, searches run, clicks) over\n'
+                + 'the one copy stored under it.\n\n'
+                + 'Type a different code below only if you want to follow another\n'
+                + 'code instead.',
                 current
             );
             if (entered === null) return;
@@ -4121,8 +4217,7 @@
                 return;
             }
             if (code === current) {
-                try { await navigator.clipboard.writeText(code); } catch (err) {}
-                showToast('info', 'Code ' + code, 'Copied. Type it on another device under Sync.');
+                await syncNow();
                 return;
             }
             localStorage.setItem('syncCode', code);
@@ -5078,10 +5173,16 @@
             // must not replace them.
             if (!fromDatabase && !statsFromSession) {
                 loadIndex()
-                    .then(() => updateStats(indexStats))
+                    // Checked again here: a restored search can arrive while the
+                    // snapshot is still loading, and its counters win.
+                    .then(() => { if (!statsFromSession) updateStats(indexStats); })
                     .catch(() => {});
             }
         })();
+
+        // The sync code is on the page from the start, so it never has to be
+        // remembered or asked for.
+        setSyncLabel();
 
         // --- Connection state ---
         // Says where results are coming from: the live server, or the bundled
