@@ -3957,6 +3957,11 @@
             try {
                 if (typeof restoreSession === 'function') restoreSession();
             } catch (err) { /* a failed restore must not stop the page */ }
+            // Then ask the server, always - even a browser with nothing saved of its
+            // own opens the search saved under the code.
+            try {
+                if (typeof pullSession === 'function') await pullSession({ pushIfEmpty: true });
+            } catch (err) { /* offline: this browser keeps its own copy */ }
             // A save that did not reach the server last time goes again now.
             try {
                 if (localStorage.getItem('syncPending') && localSession()) {
@@ -3964,6 +3969,19 @@
                 }
             } catch (err) { /* nothing remembered to send */ }
         }, 0);
+
+        // Keeping in step without a reload: while the page is visible it asks for the
+        // stored search again every so often, and immediately when it comes back into
+        // view. That is what makes a search started in one browser appear in another.
+        setInterval(() => {
+            if (document.visibilityState !== 'visible') return;
+            if (typeof pullSession === 'function') pullSession({ notify: true }).catch(() => {});
+        }, 45000);
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState !== 'visible') return;
+            if (typeof pullSession === 'function') pullSession({ notify: true }).catch(() => {});
+        });
 
         // --- Video Player ---
         // Opening a video is the only signal the site has about what is worth
@@ -4190,69 +4208,84 @@
         async function syncNow() {
             const code = syncCode();
             try { await navigator.clipboard.writeText(code); } catch (err) {}
+            // Newest wins in both directions: pulling also pushes when this browser
+            // is the one holding the newer search, so pressing the code can never
+            // replace a newer copy with an older one.
+            const pulled = await pullSession({ pushIfEmpty: true, notify: true });
             const local = localSession();
-            // No search here yet is not a failure: there is simply nothing to save
-            // until one runs, and the next search saves itself under this code.
-            if (!local) {
-                showToast('info', 'Sync code ' + code, 'Copied. Nothing is saved here yet - the next search is saved under this code.');
-                setSyncLabel();
-                return;
-            }
-            const saved = await pushSession(local);
-            showToast(
-                saved ? 'info' : 'error',
-                'Sync code ' + code,
-                saved
-                    ? 'Copied, and this search is saved under it - every sync writes the newest one.'
-                    : 'Copied, but the server could not take the save just now. It is kept here and sent again on your next search.'
-            );
+            showToast('info', 'Sync code ' + code, pulled
+                ? 'Copied. The newer search from your other browser is open here.'
+                : (local
+                    ? 'Copied. This browser is up to date, and this search is saved under the code.'
+                    : 'Copied. Nothing is saved here yet - the next search is saved under this code.'));
             setSyncLabel();
         }
 
-        function applySession(saved) {
+        function applySession(saved, note) {
             if (!saved || !saved.query || !Array.isArray(saved.results)) return false;
+            // Whatever is on screen is replaced, not added to: a synced search
+            // arriving over an open one used to stack a second copy of the cards.
+            if (resultsContainer) resultsContainer.innerHTML = '';
             currentQuery = saved.query;
             searchInput.value = saved.query;
-            if (saved.stats && (saved.stats.total_videos || saved.stats.total_searches || saved.stats.total_clicks)) {
-                indexStats = saved.stats;
-                statsFromSession = true;
-                updateStats(indexStats);
-            }
+            // The counters are not restored from a saved search. The copy in a saved
+            // session is a photograph taken when it was saved, so restoring it threw
+            // the live numbers away - a browser syncing an hour-old search dropped
+            // the click count back to what it had been then. The counters are read
+            // from the server instead, and they are current.
             const empty = document.getElementById('emptyState');
             if (empty) empty.remove();
             aiStatus.innerHTML = renderSummary(
                 saved.query,
                 saved.total || saved.results.length,
                 indexStats ? indexStats.total_videos : 0,
-                ['restored from your last visit']
+                [note || 'restored from your last visit']
             );
             appendResults(saved.results.map(row => Object.assign({ score: 1, genre: null }, row)));
             return true;
         }
 
-        // The copy kept by the server under this code, when it is newer than the one
-        // in this browser.
-        async function pullSession() {
+        // The copy kept by the server under this code. This runs whether or not this
+        // browser has anything saved: a browser that has never been here is the one
+        // that most needs to see the saved search.
+        async function pullSession(options) {
+            const opts = options || {};
+            let doc = null;
             try {
                 const response = await fetchBounded(
                     'api/sync?code=' + encodeURIComponent(syncCode()), {}, 10000);
                 if (!response.ok) return false;
-                const doc = await response.json();
-                if (!doc || !doc.payload) return false;
-                const saved = JSON.parse(doc.payload);
-                let local = null;
-                try { local = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); } catch (err) {}
-                // One record, newest wins: if this browser is the newer one, its
-                // search is written over the stored copy instead of being ignored.
-                if (local && (local.at || 0) >= (saved.at || 0)) {
-                    pushSession(local);
-                    return false;
-                }
-                try { localStorage.setItem(SESSION_KEY, JSON.stringify(saved)); } catch (err) {}
-                return applySession(saved);
+                doc = await response.json();
             } catch (err) {
                 return false;
             }
+
+            const local = localSession();
+            if (!doc || !doc.payload) {
+                // Nothing stored under the code yet: this browser's search becomes
+                // the copy the others will pick up.
+                if (opts.pushIfEmpty && local) await pushSession(local);
+                return false;
+            }
+
+            let saved = null;
+            try { saved = JSON.parse(doc.payload); } catch (err) { return false; }
+            if (!saved || !saved.query) return false;
+
+            // One record, newest wins: a browser whose search is newer writes it over
+            // the stored copy instead of sitting on an older one.
+            if (local && (local.at || 0) >= (saved.at || 0)) {
+                await pushSession(local);
+                return false;
+            }
+
+            const changed = !currentQuery || currentQuery !== saved.query;
+            try { localStorage.setItem(SESSION_KEY, JSON.stringify(saved)); } catch (err) {}
+            const applied = applySession(saved, 'synced from your other browser');
+            if (applied && changed && opts.notify) {
+                showToast('info', 'Synced', 'A newer search from your other browser is open here.');
+            }
+            return applied;
         }
 
         // The Sync button: show the code in use, or adopt another code.
@@ -4301,8 +4334,6 @@
             if (Date.now() - (saved.at || 0) > 7 * 24 * 60 * 60 * 1000) return false;
             setConnection('snapshot');
             const shown = applySession(saved);
-            // Then ask the server whether another device has something newer.
-            pullSession().catch(() => {});
             return shown;
         }
 

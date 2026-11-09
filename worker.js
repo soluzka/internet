@@ -349,6 +349,16 @@ async function searchIndex(env, url) {
     return json({ query, total: 0, library, discovered, videos: [] });
   }
 
+  // A search that was run is a search that was run, whether or not the database
+  // can answer it. Counting it first is the difference between a number that moves
+  // while the database is over its limit and one that sits still, and it costs one
+  // KV read and one KV write.
+  const logging = url.searchParams.get('log') === '1';
+  if (logging) {
+    const after = await bumpStats(env, 'total_searches', 1);
+    if (after.total_searches) library.total_searches = after.total_searches;
+  }
+
   // LIKE wildcards inside a search term are escaped, so a term of "100%" is a
   // search for that text rather than for everything.
   const patterns = terms.map((term) => '%' + term.replace(/[\\%_]/g, (ch) => '\\' + ch) + '%');
@@ -375,17 +385,33 @@ async function searchIndex(env, url) {
   // "328 matches". Capping the inner scan at 1000 rows keeps the number exact for
   // every ordinary search and costs far less, which is what stops the free daily
   // limit from running out in a day of browsing.
-  const counted = offset > 0
-    ? null
-    : await env.DB.prepare(
-      `SELECT COUNT(*) AS n FROM (SELECT 1 FROM videos WHERE ${videosOnly} LIMIT 1000)`
-    ).bind(...params).first();
+  let counted = null;
+  let found = null;
+  try {
+    counted = offset > 0
+      ? null
+      : await env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM (SELECT 1 FROM videos WHERE ${videosOnly} LIMIT 1000)`
+      ).bind(...params).first();
 
-  const found = await env.DB.prepare(
-    'SELECT url, title, description, thumbnail, duration, source, click_count, tags, genre_json '
-    + `FROM videos WHERE ${videosOnly} `
-    + 'ORDER BY click_count DESC, relevance_score DESC, id DESC LIMIT ? OFFSET ?'
-  ).bind(...params, limit, offset).all();
+    found = await env.DB.prepare(
+      'SELECT url, title, description, thumbnail, duration, source, click_count, tags, genre_json '
+      + `FROM videos WHERE ${videosOnly} `
+      + 'ORDER BY click_count DESC, relevance_score DESC, id DESC LIMIT ? OFFSET ?'
+    ).bind(...params, limit, offset).all();
+  } catch (err) {
+    // The library could not be read. That is not the same as "no results": say so,
+    // and still hand back the counters so the page does not fall back to zeros.
+    return json({
+      error: 'The library could not be read just now.',
+      detail: String((err && err.message) || err).slice(0, 200),
+      query,
+      total: 0,
+      library,
+      discovered,
+      videos: [],
+    }, 503);
+  }
 
   const videos = (found.results || []).map((row) => ({
     u: row.url,
@@ -403,15 +429,12 @@ async function searchIndex(env, url) {
 
   // Only searches a person made are kept: log=1 is sent by the page, so a crawler
   // following the URL cannot fill the history with its own queries.
-  if (url.searchParams.get('log') === '1') {
+  if (logging) {
     try {
       await env.DB.prepare(
         'INSERT INTO search_history (query, result_count, searched_at) VALUES (?, ?, ?)'
       ).bind(query, Number(counted && counted.n) || videos.length, Date.now() / 1000).run();
-    } catch (err) { /* the history is a nicety; the count below still happens */ }
-    // Counted in KV, so a database refusing writes cannot stop a search counting.
-    const after = await bumpStats(env, 'total_searches', 1);
-    if (after.total_searches) library.total_searches = after.total_searches;
+    } catch (err) { /* the history is a nicety; the count already happened above */ }
   }
   return json({
     query,
