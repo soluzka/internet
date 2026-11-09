@@ -261,6 +261,31 @@ async function transcribe(request, env) {
 //
 // The page asks for thirty at a time and paints more as it scrolls; before this
 // it downloaded all 8,724 rows before it could show a single card.
+//
+// What counts as a video. The library was filled once by an import that stored
+// every link it met, so along with 6,400 real videos it holds about 2,300 web
+// pages: support articles, forums, dictionaries, weather pages, restaurant menus.
+// Those are not videos, cannot play, and had no business in a search result. Both
+// the search and the ingest use this one list, so what is stored and what is shown
+// agree.
+const VIDEO_URL_PATTERNS = [
+  '//youtube.com/', '//www.youtube.com/', '//m.youtube.com/', '//music.youtube.com/',
+  '//youtu.be/', '//www.dailymotion.com/', '//dailymotion.com/',
+  '//www.tiktok.com/', '//tiktok.com/', '//vm.tiktok.com/',
+  '//vimeo.com/', '//www.vimeo.com/', '//www.instagram.com/', '//instagram.com/',
+  '//twitter.com/', '//x.com/', '//soundcloud.com/', '//www.soundcloud.com/',
+  '//www.bilibili.com/', '//www.facebook.com/', '//www.twitch.tv/',
+];
+
+function isVideoUrl(link) {
+  const lowered = String(link || '').toLowerCase();
+  return VIDEO_URL_PATTERNS.some((pattern) => lowered.includes(pattern));
+}
+
+function videoHostClause() {
+  return '(' + VIDEO_URL_PATTERNS.map((p) => `url LIKE '%${p}%'`).join(' OR ') + ')';
+}
+
 // The same words searched again within a minute - a retry, a voice repeat, a
 // reload - are answered from the edge cache instead of scanning the database
 // again. A search that logs itself, or one that discovers new videos, has a side
@@ -334,6 +359,13 @@ async function searchIndex(env, url) {
   const params = [];
   patterns.forEach((pattern) => params.push(pattern, pattern, pattern));
 
+  // Only rows that are actually videos. About a quarter of the library is web
+  // pages - support articles, forums, weather pages, pizza menus - collected by
+  // an older import that stored any link it found. They are filtered out here so
+  // a search never offers one, and a cleanup of the table can follow when the
+  // database is accepting writes again.
+  const videosOnly = clause + ' AND ' + videoHostClause();
+
   // Counting the matches is a full scan of the library (LIKE on three columns),
   // so it is done once, on the first page. Pages after it only need rows: the
   // page keeps the total from page one, and asking for it again on every one of
@@ -346,12 +378,12 @@ async function searchIndex(env, url) {
   const counted = offset > 0
     ? null
     : await env.DB.prepare(
-      `SELECT COUNT(*) AS n FROM (SELECT 1 FROM videos WHERE ${clause} LIMIT 1000)`
+      `SELECT COUNT(*) AS n FROM (SELECT 1 FROM videos WHERE ${videosOnly} LIMIT 1000)`
     ).bind(...params).first();
 
   const found = await env.DB.prepare(
     'SELECT url, title, description, thumbnail, duration, source, click_count, tags, genre_json '
-    + `FROM videos WHERE ${clause} `
+    + `FROM videos WHERE ${videosOnly} `
     + 'ORDER BY click_count DESC, relevance_score DESC, id DESC LIMIT ? OFFSET ?'
   ).bind(...params, limit, offset).all();
 
@@ -564,6 +596,10 @@ async function ingestVideos(env, request) {
     const link = String((video && video.url) || '').trim();
     const title = String((video && video.title) || '').trim();
     if (!/^https?:\/\//.test(link) || !title || seen.has(link)) continue;
+    // A web page is not a video. The library once filled up with forum threads,
+    // dictionaries and restaurant menus because anything with a URL was stored;
+    // nothing that is not on a video host gets in again.
+    if (!isVideoUrl(link)) continue;
     seen.add(link);
     const source = String((video.source) || 'YouTube').slice(0, 40);
     statements.push(
