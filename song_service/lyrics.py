@@ -18,6 +18,7 @@ import random
 import re
 import sys
 import threading
+import time
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -106,6 +107,28 @@ def lyrics_model_id(manifest):
     return 'Qwen/Qwen2.5-1.5B-Instruct'
 
 
+def _text_pipeline(wait_seconds=180):
+    """`transformers.pipeline`, waiting out an import another thread started.
+
+    The warm-up imports transformers for the song model and for this one, and a
+    module that is still initialising is in sys.modules without its attributes
+    yet - so `from transformers import pipeline` raises ImportError there instead
+    of waiting. That is what the first lyric request of a session hit on 8 Nov
+    2026: a 500 saying "cannot import name 'pipeline'", while the same request
+    answered in nine seconds a minute later. Nothing is wrong with the install,
+    so retry until the import has finished, and only then believe the error.
+    """
+    deadline = time.time() + wait_seconds
+    while True:
+        try:
+            from transformers import pipeline
+            return pipeline
+        except ImportError:
+            if time.time() >= deadline:
+                raise
+            time.sleep(0.25)
+
+
 class Lyricist:
     """Loads the model once and keeps it resident for later requests."""
 
@@ -117,7 +140,7 @@ class Lyricist:
 
     def _build(self):
         import torch
-        from transformers import pipeline
+        pipeline = _text_pipeline()
 
         if self.device is None:
             self.device = 'cuda' if torch.cuda.is_available() else 'cpu'

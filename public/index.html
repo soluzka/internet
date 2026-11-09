@@ -2075,7 +2075,7 @@
             // The Worker answers 501 here: it has no GPU. Once that is seen the
             // page stops asking it, which is where those 501s in the console
             // came from on every compose.
-            if (window.edgeSongModel !== false) bases.push('');
+            if (window.edgeSongModel !== false && !edgeModelKnownOff()) bases.push('');
             if (!bases.includes('http://127.0.0.1:8090')) bases.push('http://127.0.0.1:8090');
             if (window.SONG_API) bases.push(String(window.SONG_API).replace(/\/+$/, ''));
 
@@ -2112,7 +2112,7 @@
                 }
                 const isJson = (response.headers.get('content-type') || '').includes('application/json');
                 if (!response.ok || !isJson) {
-                    if (base === '' && response.status === 501) window.edgeSongModel = false;
+                    if (base === '' && response.status === 501) rememberEdgeModelOff();
                     continue;
                 }
                 const data = await response.json().catch(() => ({}));
@@ -2747,6 +2747,23 @@
         // either finished audio (the local model on 8090) or a job to poll (ACE).
         // Every network step is bounded: a model that is loading or wedged must
         // not leave the page saying "composing" forever. Abort means fall back.
+        // The Worker answers 501 on /api/lyrics and /api/song/latest because it has
+        // no GPU: the model only exists on this machine. Asking once per load is
+        // what put a red 501 in the console every time, so the answer is
+        // remembered for a day - a deploy that does add a model is still noticed
+        // rather than skipped forever.
+        function edgeModelKnownOff() {
+            try {
+                const seen = Number(localStorage.getItem('edgeModelOff') || 0);
+                return seen > 0 && (Date.now() - seen) < 86400000;
+            } catch (err) { return false; }
+        }
+
+        function rememberEdgeModelOff() {
+            window.edgeSongModel = false;
+            try { localStorage.setItem('edgeModelOff', String(Date.now())); } catch (err) {}
+        }
+
         async function fetchBounded(url, options, ms) {
             const controller = new AbortController();
             const timer = setTimeout(() => controller.abort(), ms);
@@ -2775,8 +2792,8 @@
             const isJson = (response.headers.get('content-type') || '').includes('application/json');
             // A plain static host, or Flask without the route, answers with HTML.
             if (!isJson) return null;
-            // 501 is the Worker saying it has no GPU: stop asking it this session.
-            if (base === '' && response.status === 501) window.edgeSongModel = false;
+            // 501 is the Worker saying it has no GPU: stop asking it today.
+            if (base === '' && response.status === 501) rememberEdgeModelOff();
             const data = await response.json().catch(() => ({}));
             if (!response.ok) {
                 throw new Error(data.error || 'the song service refused the request');
@@ -2799,7 +2816,7 @@
                 const saved = (localStorage.getItem('songApi') || '').trim().replace(/\/+$/, '');
                 if (saved) bases.push(saved);
             } catch (err) {}
-            if (window.edgeSongModel !== false) bases.push('');
+            if (window.edgeSongModel !== false && !edgeModelKnownOff()) bases.push('');
             if (!bases.includes('http://127.0.0.1:8090')) bases.push('http://127.0.0.1:8090');
             if (window.SONG_API) bases.push(String(window.SONG_API).replace(/\/+$/, ''));
 
@@ -2812,7 +2829,7 @@
                 let latest = null;
                 try {
                     const probe = await fetchBounded(base + '/api/song/latest', {}, 8000);
-                    if (base === '' && probe.status === 501) window.edgeSongModel = false;
+                    if (base === '' && probe.status === 501) rememberEdgeModelOff();
                     latest = await probe.json();
                 } catch (err) {
                     continue;
