@@ -1064,7 +1064,10 @@
                 results,
                 total,
                 discovered: Number(doc.discovered) || 0,
-                stats: doc.library ? {
+                // A database that answers zeros is a database that could not be
+                // read, not an empty library. Taken as real, those zeros wiped the
+                // counters the page had already shown from the bundled snapshot.
+                stats: (doc.library && Number(doc.library.total_videos) > 0) ? {
                     total_videos: Number(doc.library.total_videos) || 0,
                     total_searches: Number(doc.library.total_searches) || 0,
                     total_clicks: Number(doc.library.total_clicks) || 0,
@@ -1383,6 +1386,13 @@
                     }
                     searchBtn.disabled = false;
                     searchBtn.textContent = 'Search';
+                    // The search itself is a search that ran, whether or not the
+                    // database managed to log it.
+                    if (indexStats) {
+                        indexStats = Object.assign({}, indexStats, {
+                            total_searches: (indexStats.total_searches || 0) + 1,
+                        });
+                    }
                     aiStatus.innerHTML = renderSummary(query, found.total, indexStats ? indexStats.total_videos : 0, extras);
                     if (indexStats) updateStats(indexStats);
 
@@ -3982,6 +3992,14 @@
                 .then(doc => {
                     if (!doc || doc.queued) {
                         queueClick(entry);
+                        // It is still a click that happened, so the number shown
+                        // goes up even though the database has not stored it yet.
+                        if (indexStats) {
+                            indexStats = Object.assign({}, indexStats, {
+                                total_clicks: (indexStats.total_clicks || 0) + 1,
+                            });
+                            updateStats(indexStats);
+                        }
                         return;
                     }
                     if (!doc.library) return;
