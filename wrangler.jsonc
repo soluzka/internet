@@ -32,6 +32,17 @@
   "ai": {
     "binding": "AI"
   },
+  // The index the site searches. It used to be a 3 MB videos.json that the page
+  // downloaded in full before it could show a single result; the same 8,724 rows
+  // live here now, so /api/search answers with thirty at a time and the table can
+  // be updated without redeploying the page.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "video-index",
+      "database_id": "95b355c9-264c-4ee6-aa11-f4bf6b021a43"
+    }
+  ],
   "observability": {
     "enabled": true
   }

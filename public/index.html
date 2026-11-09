@@ -867,6 +867,27 @@
             return indexRequest;
         }
 
+        // Search the index where it lives. The Worker answers with the shape the
+        // page already renders (u/t/d/th/du/s/c/tg), so nothing downstream had to
+        // learn a second format; a page with no Worker behind it fails here and
+        // falls back to the bundled file.
+        async function apiSearch(query) {
+            const url = 'api/search?q=' + encodeURIComponent(query) + '&limit=60&log=1';
+            const response = await fetchBounded(url, {}, 15000);
+            if (!response.ok) throw new Error('search unavailable (' + response.status + ')');
+            const doc = await response.json();
+            if (!doc || !Array.isArray(doc.videos)) throw new Error('search returned an unexpected shape');
+            return {
+                results: doc.videos,
+                total: Number(doc.total) || 0,
+                stats: doc.library ? {
+                    total_videos: Number(doc.library.total_videos) || 0,
+                    total_searches: Number(doc.library.total_searches) || 0,
+                    total_clicks: Number(doc.library.total_clicks) || 0,
+                } : null,
+            };
+        }
+
         function tokenize(text) {
             return String(text || '').toLowerCase().match(/[a-z0-9']+/g) || [];
         }
@@ -1167,14 +1188,12 @@
                 searchBtn.textContent = 'Searching...';
                 aiStatus.innerHTML = '<div class="ai-thinking"><div class="ai-dot"></div>Searching the video index...</div>';
 
-                loadIndex()
-                .then(() => {
-                    const found = localSearch(query);
+                const finish = (found) => {
                     const results = found.results;
                     searchBtn.disabled = false;
                     searchBtn.textContent = 'Search';
-                    aiStatus.innerHTML = renderSummary(query, found.total, indexStats.total_videos, []);
-                    updateStats(indexStats);
+                    aiStatus.innerHTML = renderSummary(query, found.total, indexStats ? indexStats.total_videos : 0, []);
+                    if (indexStats) updateStats(indexStats);
 
                     // Remove empty state and show results
                     const empty = document.getElementById('emptyState');
@@ -1191,15 +1210,27 @@
                         speak(`Found ${found.total} videos about ${query}`);
                         isVoiceSearch = false;
                     }
-                })
-                .catch(err => {
-                    searchBtn.disabled = false;
-                    searchBtn.textContent = 'Search';
-                    aiStatus.innerHTML = '';
-                    setConnection('offline');
-                    showToast('error', 'Search Error',
-                        'The search server is not reachable and the bundled index could not be loaded. Reload the page to retry.');
-                });
+                };
+
+                // The index is a table in D1 behind the Worker now: sixty rows per
+                // request, sorted by what people clicked, and the search is logged
+                // where the library lives. The bundled JSON is only the fallback
+                // for a copy of the page with no database behind it.
+                apiSearch(query)
+                    .then(found => {
+                        if (found.stats) indexStats = found.stats;
+                        finish(found);
+                    })
+                    .catch(() => loadIndex()
+                        .then(() => finish(localSearch(query)))
+                        .catch(err => {
+                            searchBtn.disabled = false;
+                            searchBtn.textContent = 'Search';
+                            aiStatus.innerHTML = '';
+                            setConnection('offline');
+                            showToast('error', 'Search Error',
+                                'The search server is not reachable and the bundled index could not be loaded. Reload the page to retry.');
+                        }));
             }
         }
 

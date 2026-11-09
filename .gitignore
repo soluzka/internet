@@ -25,6 +25,7 @@ build/launcher_trace.txt
 build/*.wav
 build/*.mp3
 build/*.json
+build/*.sql
 
 # Wrangler's own cache, written by every deploy
 dist/

@@ -31,6 +31,10 @@ const TRANSCRIBE_ROUTE = /^\/api\/transcribe$/i;
 // awake and holding a cookie jar, instead of guessing from a failed download.
 const HEALTH_ROUTE = /^\/api\/health$/i;
 
+// The video index, answered from D1 instead of from the 3 MB videos.json the page
+// used to download in full before it could show anything.
+const SEARCH_ROUTE = /^\/api\/search$/i;
+
 // The music model cannot run here: it needs a GPU that a Worker does not have.
 // These paths exist so the page gets a straight answer instead of a 405 from
 // the static asset handler, and so an address can be supplied with SONG_API
@@ -59,6 +63,10 @@ export default {
 
     if (HEALTH_ROUTE.test(url.pathname)) {
       return downloaderHealth(env);
+    }
+
+    if (SEARCH_ROUTE.test(url.pathname)) {
+      return searchIndex(env, url);
     }
 
     if (SONG_ROUTES.some((route) => route.test(url.pathname))) {
@@ -211,6 +219,90 @@ async function transcribe(request, env) {
 
   const text = String((result && result.text) || '').trim();
   return json({ text, model: WHISPER_MODEL });
+}
+
+// The video index, queried in place. Every word of the query has to appear in the
+// row, so "dubstep mix" narrows instead of widening to anything holding either
+// word, and the order prefers what people actually clicked.
+//
+// The page asks for thirty at a time and paints more as it scrolls; before this
+// it downloaded all 8,724 rows before it could show a single card.
+async function searchIndex(env, url) {
+  const query = (url.searchParams.get('q') || '').trim().slice(0, 120);
+  const limit = Math.min(60, Math.max(1, Number(url.searchParams.get('limit')) || 30));
+
+  if (!env.DB) {
+    return json({ error: 'No video index is attached to this Worker.' }, 501);
+  }
+
+  const library = await indexTotals(env);
+  if (!query) {
+    return json({ query: '', total: 0, library, videos: [] });
+  }
+
+  const terms = (query.toLowerCase().match(/[a-z0-9']+/g) || []).slice(0, 8);
+  if (!terms.length) {
+    return json({ query, total: 0, library, videos: [] });
+  }
+
+  // LIKE wildcards inside a search term are escaped, so a term of "100%" is a
+  // search for that text rather than for everything.
+  const patterns = terms.map((term) => '%' + term.replace(/[\\%_]/g, (ch) => '\\' + ch) + '%');
+  const clause = patterns
+    .map(() => "(lower(title) LIKE ? ESCAPE '\\' OR lower(description) LIKE ? ESCAPE '\\' "
+      + "OR lower(tags) LIKE ? ESCAPE '\\')")
+    .join(' AND ');
+  const params = [];
+  patterns.forEach((pattern) => params.push(pattern, pattern, pattern));
+
+  const counted = await env.DB.prepare(`SELECT COUNT(*) AS n FROM videos WHERE ${clause}`)
+    .bind(...params)
+    .first();
+
+  const found = await env.DB.prepare(
+    'SELECT url, title, description, thumbnail, duration, source, click_count, tags '
+    + `FROM videos WHERE ${clause} `
+    + 'ORDER BY click_count DESC, relevance_score DESC, id DESC LIMIT ?'
+  ).bind(...params, limit).all();
+
+  const videos = (found.results || []).map((row) => ({
+    u: row.url,
+    t: row.title,
+    d: row.description,
+    th: row.thumbnail,
+    du: row.duration,
+    s: row.source,
+    c: row.click_count,
+    tg: row.tags,
+  }));
+
+  // Only searches a person made are kept: log=1 is sent by the page, so a crawler
+  // following the URL cannot fill the history with its own queries.
+  if (url.searchParams.get('log') === '1') {
+    try {
+      await env.DB.prepare(
+        'INSERT INTO search_history (query, result_count, searched_at) VALUES (?, ?, ?)'
+      ).bind(query, Number(counted && counted.n) || videos.length, Date.now() / 1000).run();
+      library.total_searches += 1;
+    } catch (err) { /* a full or missing table must not fail the search */ }
+  }
+
+  return json({ query, total: Number(counted && counted.n) || 0, library, videos });
+}
+
+async function indexTotals(env) {
+  try {
+    const videos = await env.DB.prepare('SELECT COUNT(*) AS n FROM videos').first();
+    const searches = await env.DB.prepare('SELECT COUNT(*) AS n FROM search_history').first();
+    const clicks = await env.DB.prepare('SELECT COALESCE(SUM(click_count), 0) AS n FROM videos').first();
+    return {
+      total_videos: Number(videos && videos.n) || 0,
+      total_searches: Number(searches && searches.n) || 0,
+      total_clicks: Number(clicks && clicks.n) || 0,
+    };
+  } catch (err) {
+    return { total_videos: 0, total_searches: 0, total_clicks: 0 };
+  }
 }
 
 function json(body, status) {

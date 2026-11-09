@@ -56,6 +56,35 @@ They resolve the repo root from their own location, so any of them runs from
 wherever you are. `race_test.ps1` restarts the song service; run it when nothing
 is rendering.
 
+### The index on the site
+
+The 8,724 videos live in a Cloudflare D1 database (`video-index`, bound as `DB`
+in `wrangler.jsonc`), and `/api/search` answers from it. The page asks for sixty
+rows per search instead of downloading `public/data/videos.json` — three
+megabytes the browser used to fetch in full before it could show one card.
+
+```
+GET /api/search?q=dubstep+mix&limit=60&log=1
+{ "query": "dubstep mix", "total": 69,
+  "library": { "total_videos": 8724, "total_searches": 114, "total_clicks": 55 },
+  "videos": [ { "u": "…", "t": "…", "th": "…", "c": 1 } ] }
+```
+
+Every word has to appear in the row, so two words narrow rather than widen, and
+the order prefers what people clicked. `log=1` is sent by the page only: a real
+search is written to `search_history`, a crawler following the URL is not.
+
+`public/data/videos.json` stays as the fallback for a copy of the page with no
+database behind it. To push the SQLite file's contents up after a change:
+
+```
+python build/export_d1.py
+build/wr.ps1 d1 execute video-index --remote --file build/d1_import.sql
+```
+
+`build/wr.ps1` is wrangler via the portable Node in `build/wrangler-tool`, which
+is how this project deploys without a global install.
+
 ## Run it locally
 
 ```bash
