@@ -468,9 +468,22 @@ async function syncSession(env, request, url) {
 
   if (request.method === 'GET') {
     try {
+      // Newest save wins. Saves are appended rather than overwritten, because
+      // updating a row in place makes D1 read it first - and a database that is
+      // refusing reads would then refuse the save too.
       const row = await env.DB.prepare(
-        'SELECT payload, updated_at FROM sync_sessions WHERE code = ?'
+        'SELECT payload, updated_at FROM sync_saves WHERE code = ? ORDER BY id DESC LIMIT 1'
       ).bind(code).first();
+      if (!row) {
+        const older = await env.DB.prepare(
+          'SELECT payload, updated_at FROM sync_sessions WHERE code = ?'
+        ).bind(code).first();
+        return json({
+          code,
+          payload: older ? older.payload : null,
+          updated_at: older ? Number(older.updated_at) || 0 : 0,
+        });
+      }
       return json({
         code,
         payload: row ? row.payload : null,
@@ -487,11 +500,11 @@ async function syncSession(env, request, url) {
     if (!payload) return json({ error: 'There was nothing to save.' }, 400);
     try {
       await env.DB.prepare(
-        'INSERT INTO sync_sessions (code, payload, updated_at) VALUES (?, ?, ?) '
-        + 'ON CONFLICT(code) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at'
+        'INSERT INTO sync_saves (code, payload, updated_at) VALUES (?, ?, ?)'
       ).bind(code, payload.slice(0, 200000), Date.now()).run();
       return json({ ok: true, code });
     } catch (err) {
+      // Nothing was appended: the page keeps the search and can try again.
       return json({
         error: 'The search could not be saved to the server.',
         detail: String((err && err.message) || err).slice(0, 200),
@@ -579,6 +592,45 @@ async function recordClick(env, request) {
   const title = String((body && body.title) || '').slice(0, 300);
   const query = String((body && body.query) || '').slice(0, 120);
 
+  // Every click carries the id the page gave it. The click is stored under that
+  // id first, and only a row that was actually new moves the counters. A click
+  // the page sends again because it never saw the answer - a lost response, a
+  // page closed mid-request, a queue flushed twice - lands on the same id and is
+  // ignored, so the count can no longer run ahead of the clicks that happened.
+  const eventId = String((body && body.id) || '').trim().slice(0, 80);
+  if (!eventId) {
+    return json({ error: 'A click needs an id.' }, 400);
+  }
+
+  try {
+    await env.DB.prepare(
+      'INSERT INTO click_events (event_id, url, query, title, clicked_at, counted) VALUES (?, ?, ?, ?, ?, 0) '
+      + 'ON CONFLICT(event_id) DO NOTHING'
+    ).bind(eventId, videoUrl, query, title, Date.now()).run();
+  } catch (err) {
+    // A click is worth keeping even when the database cannot take it yet: the
+    // page holds it in the browser and sends it again later, under the same id.
+    return json({ ok: false, queued: true, library: null });
+  }
+
+  // Claiming the increment is what makes it happen once. Only the request that
+  // flips counted from 0 to 1 moves the counters; every other send of the same
+  // click finds it already claimed and writes nothing.
+  let claimed = 0;
+  try {
+    const claim = await env.DB.prepare(
+      'UPDATE click_events SET counted = 1 WHERE event_id = ? AND counted = 0'
+    ).bind(eventId).run();
+    claimed = Number(claim && claim.meta && claim.meta.changes) || 0;
+  } catch (err) {
+    return json({ ok: false, queued: true, library: null });
+  }
+
+  if (!claimed) {
+    // Already counted. Nothing is written a second time.
+    return json({ ok: true, duplicate: true, library: await indexTotals(env) });
+  }
+
   try {
     await env.DB.batch([
       env.DB.prepare('UPDATE videos SET click_count = click_count + 1 WHERE url = ?').bind(videoUrl),
@@ -588,13 +640,14 @@ async function recordClick(env, request) {
       bumpStats(env, 'total_clicks', 1),
     ]);
   } catch (err) {
-    // A click is worth keeping even when the database cannot take it yet: the
-    // page holds it in the browser and sends it again later. Answering 500 lost
-    // the click and made the counters stand still while D1 was over its limit.
-    return json({ ok: false, queued: true, library: null });
+    // The click is stored but not yet counted. Giving the claim back lets the
+    // same click, sent again later, be the one that counts it - once.
+    await env.DB.prepare('UPDATE click_events SET counted = 0 WHERE event_id = ?')
+      .bind(eventId).run().catch(() => {});
+    return json({ ok: false, queued: true, partial: true, library: null });
   }
 
-  return json({ ok: true, library: await indexTotals(env) });
+  return json({ ok: true, duplicate: false, library: await indexTotals(env) });
 }
 
 function parseGenre(text) {

@@ -3957,6 +3957,12 @@
             try {
                 if (typeof restoreSession === 'function') restoreSession();
             } catch (err) { /* a failed restore must not stop the page */ }
+            // A save that did not reach the server last time goes again now.
+            try {
+                if (localStorage.getItem('syncPending') && localSession()) {
+                    pushSession(localSession());
+                }
+            } catch (err) { /* nothing remembered to send */ }
         }, 0);
 
         // --- Video Player ---
@@ -3985,9 +3991,25 @@
             } catch (err) { /* storage full or blocked: nothing else to do */ }
         }
 
+        // Each click gets an id the database can recognise, so sending the same
+        // click again can never count it twice.
+        function newClickId() {
+            try {
+                if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+                    return window.crypto.randomUUID();
+                }
+            } catch (err) { /* older browser: fall through */ }
+            return 'c-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12);
+        }
+
         function queueClick(entry) {
             const list = readClickQueue();
-            list.push(entry);
+            const click = Object.assign({}, entry);
+            if (!click.id) click.id = newClickId();
+            // The same click queued twice - a retried request, a page hidden at the
+            // wrong moment - stays one entry.
+            if (list.some(item => item.id === click.id)) return;
+            list.push(click);
             writeClickQueue(list);
         }
 
@@ -3998,21 +4020,37 @@
             if (!pending.length) return;
             flushingClicks = true;
             const remaining = [];
+            let latest = null;
             for (const item of pending) {
                 try {
                     const response = await fetchBounded('api/click', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ url: item.url, title: item.title, query: item.query }),
+                        body: JSON.stringify({ id: item.id, url: item.url, title: item.title, query: item.query }),
                     }, 8000);
                     const doc = response.ok ? await response.json().catch(() => null) : null;
-                    if (!doc || doc.queued) remaining.push(item);
+                    // A click whose counters could not be written yet is sent again:
+                    // the database recognises the id, so the retry counts it once
+                    // rather than twice.
+                    if (!doc || doc.queued || doc.partial) remaining.push(item);
+                    else if (doc.library && Number(doc.library.total_clicks) > 0) latest = doc.library;
                 } catch (err) {
                     remaining.push(item);
                 }
             }
             writeClickQueue(remaining);
             flushingClicks = false;
+            // The stored clicks are the database's business: show its numbers, not
+            // a running guess made in this browser.
+            if (latest) {
+                indexStats = {
+                    total_videos: Number(latest.total_videos) || (indexStats ? indexStats.total_videos : 0),
+                    total_searches: Number(latest.total_searches) || (indexStats ? indexStats.total_searches : 0),
+                    total_clicks: Number(latest.total_clicks) || 0,
+                };
+                statsFromSession = false;
+                updateStats(indexStats);
+            }
             if (!remaining.length) {
                 const queued = readClickQueue().length;
                 if (!queued) showToast('info', 'Clicks saved', 'The clicks made while the database was unavailable are now recorded.');
@@ -4088,6 +4126,15 @@
                 body: JSON.stringify({ payload: JSON.stringify(body) }),
             }, 8000)
                 .then(response => response.ok)
+                .then(ok => {
+                    // A save the server refused is tried again next time instead of
+                    // being forgotten.
+                    try {
+                        if (ok) localStorage.removeItem('syncPending');
+                        else localStorage.setItem('syncPending', '1');
+                    } catch (err) { /* storage blocked: nothing to remember with */ }
+                    return ok;
+                })
                 .catch(() => false);
         }
 
@@ -4141,13 +4188,20 @@
             const code = syncCode();
             try { await navigator.clipboard.writeText(code); } catch (err) {}
             const local = localSession();
-            const saved = local ? await pushSession(local) : false;
+            // No search here yet is not a failure: there is simply nothing to save
+            // until one runs, and the next search saves itself under this code.
+            if (!local) {
+                showToast('info', 'Sync code ' + code, 'Copied. Nothing is saved here yet - the next search is saved under this code.');
+                setSyncLabel();
+                return;
+            }
+            const saved = await pushSession(local);
             showToast(
                 saved ? 'info' : 'error',
                 'Sync code ' + code,
                 saved
-                    ? 'Copied, and this search is saved under it - every sync overwrites that one copy.'
-                    : 'Copied, but the server could not be reached to save under it.'
+                    ? 'Copied, and this search is saved under it - every sync writes the newest one.'
+                    : 'Copied, but the server could not take the save just now. It is kept here and sent again on your next search.'
             );
             setSyncLabel();
         }
@@ -4251,15 +4305,21 @@
 
         function recordClick(url, title) {
             if (!url) return;
-            const entry = { url: url, title: title || '', query: currentQuery || '', at: Date.now() };
+            const entry = {
+                id: newClickId(),
+                url: url,
+                title: title || '',
+                query: currentQuery || '',
+                at: Date.now(),
+            };
             fetchBounded('api/click', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url: entry.url, title: entry.title, query: entry.query }),
+                body: JSON.stringify({ id: entry.id, url: entry.url, title: entry.title, query: entry.query }),
             }, 8000)
                 .then(response => (response.ok ? response.json() : null))
                 .then(doc => {
-                    if (!doc || doc.queued) {
+                    if (!doc || doc.queued || doc.partial) {
                         queueClick(entry);
                         // It is still a click that happened, so the number shown
                         // goes up even though the database has not stored it yet.
@@ -4271,12 +4331,17 @@
                         }
                         return;
                     }
+                    // The database's own numbers win whenever it can supply them; a
+                    // zero here means it could not be read, not that it is empty.
                     if (!doc.library) return;
-                    indexStats = {
-                        total_videos: Number(doc.library.total_videos) || (indexStats ? indexStats.total_videos : 0),
-                        total_searches: Number(doc.library.total_searches) || (indexStats ? indexStats.total_searches : 0),
-                        total_clicks: Number(doc.library.total_clicks) || 0,
+                    const library = doc.library;
+                    const next = {
+                        total_videos: Number(library.total_videos) || (indexStats ? indexStats.total_videos : 0),
+                        total_searches: Number(library.total_searches) || (indexStats ? indexStats.total_searches : 0),
+                        total_clicks: Number(library.total_clicks) || (indexStats ? indexStats.total_clicks : 0),
                     };
+                    indexStats = next;
+                    statsFromSession = false;
                     updateStats(indexStats);
                 })
                 .catch(() => queueClick(entry));
