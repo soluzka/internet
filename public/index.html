@@ -1436,11 +1436,15 @@
                         const merged = mergeFound(found.results, extra.videos || []);
                         found.total = found.total + merged.added;
                         found.results = merged.results;
-                        if (extra.added) {
-                            found.discovered = (Number(found.discovered) || 0) + extra.added;
+                        // Count what was found, not only what the database accepted:
+                        // while it is refusing writes the library still grew by these
+                        // videos on screen, and a counter that never moves reads as
+                        // discovery being broken.
+                        if (merged.added) {
+                            found.discovered = (Number(found.discovered) || 0) + merged.added;
                             if (indexStats) {
                                 indexStats = Object.assign({}, indexStats, {
-                                    total_videos: (indexStats.total_videos || 0) + extra.added,
+                                    total_videos: (indexStats.total_videos || 0) + merged.added,
                                 });
                             }
                         }
@@ -3912,16 +3916,75 @@
         // by, and the pair goes into learned_preferences, so the library learns
         // from what was actually watched instead of sitting at the number it was
         // imported with.
+        // Clicks the database has not accepted yet. They are kept in this browser
+        // and sent again, so a database that is refusing writes (D1 over its daily
+        // limit, a brief outage) no longer means the history simply loses them.
+        const CLICK_QUEUE = 'pendingClicks';
+
+        function readClickQueue() {
+            try {
+                const list = JSON.parse(localStorage.getItem(CLICK_QUEUE) || '[]');
+                return Array.isArray(list) ? list : [];
+            } catch (err) {
+                return [];
+            }
+        }
+
+        function writeClickQueue(list) {
+            try {
+                localStorage.setItem(CLICK_QUEUE, JSON.stringify(list.slice(-500)));
+            } catch (err) { /* storage full or blocked: nothing else to do */ }
+        }
+
+        function queueClick(entry) {
+            const list = readClickQueue();
+            list.push(entry);
+            writeClickQueue(list);
+        }
+
+        let flushingClicks = false;
+        async function flushClicks() {
+            if (flushingClicks) return;
+            const pending = readClickQueue();
+            if (!pending.length) return;
+            flushingClicks = true;
+            const remaining = [];
+            for (const item of pending) {
+                try {
+                    const response = await fetchBounded('api/click', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ url: item.url, title: item.title, query: item.query }),
+                    }, 8000);
+                    const doc = response.ok ? await response.json().catch(() => null) : null;
+                    if (!doc || doc.queued) remaining.push(item);
+                } catch (err) {
+                    remaining.push(item);
+                }
+            }
+            writeClickQueue(remaining);
+            flushingClicks = false;
+            if (!remaining.length) {
+                const queued = readClickQueue().length;
+                if (!queued) showToast('info', 'Clicks saved', 'The clicks made while the database was unavailable are now recorded.');
+            }
+        }
+
         function recordClick(url, title) {
             if (!url) return;
+            const entry = { url: url, title: title || '', query: currentQuery || '', at: Date.now() };
             fetchBounded('api/click', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url: url, title: title || '', query: currentQuery || '' }),
+                body: JSON.stringify({ url: entry.url, title: entry.title, query: entry.query }),
             }, 8000)
                 .then(response => (response.ok ? response.json() : null))
                 .then(doc => {
-                    if (!doc || !doc.library) return;
+                    if (!doc || doc.queued) {
+                        queueClick(entry);
+                        return;
+                    }
+                    if (!doc.library) return;
                     indexStats = {
                         total_videos: Number(doc.library.total_videos) || (indexStats ? indexStats.total_videos : 0),
                         total_searches: Number(doc.library.total_searches) || (indexStats ? indexStats.total_searches : 0),
@@ -3929,7 +3992,7 @@
                     };
                     updateStats(indexStats);
                 })
-                .catch(() => { /* a click that cannot be recorded must not block the player */ });
+                .catch(() => queueClick(entry));
         }
 
         // What can be played inside the page for a given link. A host with a
@@ -4813,6 +4876,8 @@
                         };
                         updateStats(indexStats);
                         fromDatabase = true;
+                        // The database answers again: send anything that piled up.
+                        flushClicks();
                     }
                 }
             } catch (err) { /* fall through to the bundled index */ }

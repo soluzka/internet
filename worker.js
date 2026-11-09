@@ -323,9 +323,16 @@ async function searchIndex(env, url) {
   // so it is done once, on the first page. Pages after it only need rows: the
   // page keeps the total from page one, and asking for it again on every one of
   // four paged requests was four scans for one search.
+  // Counting every match is a scan of the whole library, and it was the single
+  // biggest reader in the app: one "dubstep" search read 8,756 rows just to print
+  // "328 matches". Capping the inner scan at 1000 rows keeps the number exact for
+  // every ordinary search and costs far less, which is what stops the free daily
+  // limit from running out in a day of browsing.
   const counted = offset > 0
     ? null
-    : await env.DB.prepare(`SELECT COUNT(*) AS n FROM videos WHERE ${clause}`).bind(...params).first();
+    : await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM (SELECT 1 FROM videos WHERE ${clause} LIMIT 1000)`
+    ).bind(...params).first();
 
   const found = await env.DB.prepare(
     'SELECT url, title, description, thumbnail, duration, source, click_count, tags, genre_json '
@@ -487,7 +494,12 @@ async function ingestVideos(env, request) {
     for (const result of results) added += Number((result.meta && result.meta.changes) || 0);
     if (added) await bumpStats(env, 'total_videos', added).run();
   } catch (err) {
-    return json({ error: 'Those videos could not be stored.' }, 500);
+    // The reason is useful: a full disk, a locked table and an exhausted daily
+    // limit all look identical from the page otherwise.
+    return json({
+      error: 'Those videos could not be stored.',
+      detail: String((err && err.message) || err).slice(0, 300),
+    }, 500);
   }
   return json({ added, library: await indexTotals(env) });
 }
@@ -518,10 +530,13 @@ async function recordClick(env, request) {
       bumpStats(env, 'total_clicks', 1),
     ]);
   } catch (err) {
-    return json({ error: 'The click could not be recorded.' }, 500);
+    // A click is worth keeping even when the database cannot take it yet: the
+    // page holds it in the browser and sends it again later. Answering 500 lost
+    // the click and made the counters stand still while D1 was over its limit.
+    return json({ ok: false, queued: true, library: null });
   }
 
-  return json({ library: await indexTotals(env) });
+  return json({ ok: true, library: await indexTotals(env) });
 }
 
 function parseGenre(text) {
