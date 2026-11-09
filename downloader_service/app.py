@@ -298,6 +298,12 @@ def api_discover():
     except Exception as exc:  # noqa: BLE001 - reported to the page as text
         return jsonify({'error': _friendly_error(str(exc), query)}), 502
 
+    videos = _video_entries(info)
+    return jsonify({'query': query, 'count': len(videos), 'videos': videos})
+
+
+def _video_entries(info) -> list:
+    """Turns yt-dlp's listing entries into the shape the page's cards read."""
     videos = []
     for entry in (info or {}).get('entries') or []:
         if not entry:
@@ -314,8 +320,64 @@ def api_discover():
             'duration': _clock(entry.get('duration')),
             'source': entry.get('ie_key') or 'YouTube',
         })
+    return videos
 
-    return jsonify({'query': query, 'count': len(videos), 'videos': videos})
+
+@app.route('/api/top', methods=['POST', 'OPTIONS'])
+def api_top():
+    """The most-viewed videos for a search, or the contents of a playlist.
+
+    YouTube's results page takes a filter for "sort by view count", and yt-dlp
+    reads that listing without needing a key. That is what a "top 100" means
+    here: the hundred most watched videos for the words, in that order. A
+    playlist URL is read the same way, which covers any list someone has made.
+    """
+    if request.method == 'OPTIONS':
+        return ('', 204)
+
+    data = request.get_json(silent=True) or {}
+    query = (data.get('query') or '').strip()[:120]
+    playlist = (data.get('url') or '').strip()
+    try:
+        limit = int(data.get('limit') or 100)
+    except (TypeError, ValueError):
+        limit = 100
+    limit = max(1, min(100, limit))
+
+    if playlist.startswith('http'):
+        target = playlist
+    elif query:
+        # sp=CAMSAhAB is YouTube's own "sort by view count" filter.
+        target = ('https://www.youtube.com/results?search_query=%s&sp=CAMSAhAB'
+                  % quote(query))
+    else:
+        return jsonify({'error': 'No search term or playlist was given'}), 400
+
+    options = {
+        'quiet': True,
+        'no_warnings': True,
+        'skip_download': True,
+        'extract_flat': True,
+        'playlistend': limit,
+        'socket_timeout': 30,
+    }
+    cookies = _cookie_path()
+    if cookies:
+        options['cookiefile'] = cookies
+
+    try:
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(target, download=False)
+    except Exception as exc:  # noqa: BLE001 - reported to the page as text
+        return jsonify({'error': _friendly_error(str(exc), target)}), 502
+
+    videos = _video_entries(info)
+    return jsonify({
+        'query': query,
+        'count': len(videos),
+        'title': (info or {}).get('title') or query,
+        'videos': videos[:limit],
+    })
 
 
 def _best_thumbnail(entry: Dict) -> str:

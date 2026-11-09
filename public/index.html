@@ -186,6 +186,15 @@
             0%, 100% { box-shadow: 0 0 0 0 rgba(108, 92, 231, 0.4); }
             50% { box-shadow: 0 0 0 12px rgba(108, 92, 231, 0); }
         }
+        .top-btn {
+            background: rgba(0, 206, 201, 0.12);
+            border: 1px solid rgba(0, 206, 201, 0.45);
+            color: var(--accent2);
+            font-size: 13px; font-weight: 600; padding: 0 14px; height: 44px;
+            border-radius: 10px; cursor: pointer; white-space: nowrap;
+        }
+        .top-btn:hover { background: rgba(0, 206, 201, 0.22); }
+        .top-btn:disabled { opacity: 0.6; cursor: default; }
         .search-btn {
             background: var(--accent);
             border: none;
@@ -827,6 +836,8 @@
             </button>
             <input type="text" id="searchInput" placeholder="Search for videos..." autocomplete="off" onkeypress="if(event.key==='Enter') doSearch()">
             <button class="search-btn" id="searchBtn" onclick="doSearch()">Search</button>
+            <button class="top-btn" id="topBtn" onclick="showTop()"
+                    title="The most-watched videos for these words, or the contents of a playlist link">Top 100</button>
         </div>
         <div class="ai-status" id="aiStatus"></div>
         <div class="voice-transcript" id="voiceTranscript"></div>
@@ -1443,6 +1454,73 @@
                         showToast('error', 'Search Error',
                             'The search server is not reachable and the bundled index could not be loaded. Reload the page to retry.');
                     });
+            }
+        }
+
+        // The hundred most-watched videos for whatever is in the search box, or the
+        // contents of a playlist link pasted there. Both are read by this machine's
+        // yt-dlp, because YouTube cannot be asked from the Worker, and they arrive
+        // as ordinary cards that play in the page.
+        async function showTop() {
+            const query = searchInput.value.trim();
+            const isPlaylist = /^https?:\/\//i.test(query) && /list=|\/playlist/i.test(query);
+            if (!query) {
+                showToast('info', 'Type something first', 'A genre, a song, or a playlist link.');
+                return;
+            }
+
+            const topBtn = document.getElementById('topBtn');
+            const label = topBtn.textContent;
+            topBtn.disabled = true;
+            topBtn.textContent = 'Loading…';
+            searchBtn.disabled = true;
+            resultsContainer.innerHTML = '';
+            aiStatus.innerHTML = '<div class="ai-thinking"><div class="ai-dot"></div>Reading the most-watched videos...</div>';
+
+            try {
+                const response = await fetchBounded('http://127.0.0.1:8080/api/top', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(isPlaylist ? { url: query, limit: 100 }
+                                                    : { query: query, limit: 100 }),
+                }, 90000);
+                const doc = await response.json().catch(() => null);
+                if (!response.ok || !doc || !Array.isArray(doc.videos) || !doc.videos.length) {
+                    aiStatus.innerHTML = '';
+                    showToast('error', 'No list came back',
+                        (doc && doc.error) || 'The YouTube listing is not answering right now.');
+                    return;
+                }
+
+                const results = doc.videos.map(video => ({
+                    url: video.url,
+                    title: video.title,
+                    description: video.description || '',
+                    thumbnail: video.thumbnail || '',
+                    duration: video.duration || 'Unknown',
+                    source: video.source || 'YouTube',
+                    score: 1,
+                    genre: null,
+                }));
+                results.forEach(row => seenLinks.add(String(row.url).toLowerCase()));
+
+                aiStatus.innerHTML = renderSummary(
+                    isPlaylist ? 'this playlist' : query,
+                    results.length,
+                    indexStats ? indexStats.total_videos : 0,
+                    ['most watched first']
+                );
+                const empty = document.getElementById('emptyState');
+                if (empty) empty.remove();
+                appendResults(results);
+            } catch (err) {
+                aiStatus.innerHTML = '';
+                showToast('error', 'The list could not be loaded',
+                    'The downloader service on this PC is not answering.');
+            } finally {
+                topBtn.disabled = false;
+                topBtn.textContent = label;
+                searchBtn.disabled = false;
             }
         }
 
@@ -3890,10 +3968,11 @@
                 : '';
             let host = '';
             try { host = new URL(url).hostname.replace(/^www\./, ''); } catch (err) {}
-            // Both kinds of source play here now: the embeddable ones in a frame,
-            // the rest from a stream this machine resolves. Opening the site is a
-            // separate, clearly labelled button rather than the default.
             const action = 'Play here';
+            // Two buttons, two jobs: the circle plays, the pill leaves. Labelling
+            // both "Play here" made the pill open YouTube, which read as the card
+            // hijacking the click.
+            const openLabel = 'Open on ' + (host || 'the source site');
             return `<div class="player-poster">
                 ${image}
                 <div class="player-poster-shade"></div>
@@ -3904,7 +3983,7 @@
                 <button type="button" class="player-poster-play" data-play="1" title="${action}" aria-label="${action}">
                     <span>&#9654;</span>
                 </button>
-                <button type="button" class="player-poster-open" data-open="1">${action}</button>
+                <button type="button" class="player-poster-open" data-open="1">${openLabel}</button>
             </div>`;
         }
 
