@@ -24,7 +24,7 @@ It runs two ways from one codebase:
 | `worker.js` + `wrangler.jsonc` | Cloudflare Worker: static assets, Workers AI voice, download and song proxies |
 | `downloader_service/` | Small Flask container that runs yt-dlp for the static site |
 | `song_service/` | The local lyric and music models (GPU, 8090) |
-| `tools/start_services.ps1` | Starts the downloader and the song service, and keeps `songsvc://` registered |
+| `tools/start_services.ps1` | Starts the site, the downloader and the song service, and keeps `songsvc://` registered |
 | `tools/install_autostart.ps1` | Adds the logon entry and starts the watchdog, so both return and stay up |
 | `tools/register_protocol.ps1` | Registers `songsvc://` so the site's Start the AI button can launch it |
 | `start.cmd` / `start.ps1` | One click: song service, site and tunnel |

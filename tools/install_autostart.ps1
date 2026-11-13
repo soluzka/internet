@@ -32,6 +32,10 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $launcher = Join-Path $PSScriptRoot 'start_services.ps1'
 $command = 'powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $launcher + '" -Watch'
+# The Startup entry is a .cmd, and cmd keeps its window open until the command
+# it ran exits - the watchdog never exits. `start "" /min` hands it off, so no
+# black console box is left on the desktop after logon.
+$startupCommand = 'start "" /min ' + $command
 
 # --- logon: registry Run key ----------------------------------------------
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
@@ -44,7 +48,7 @@ $cmd = Join-Path $startup 'AI song services.cmd'
 Set-Content -Path $cmd -Encoding ascii -Value @(
     '@echo off',
     'rem Added by tools\install_autostart.ps1: starts the local AI services at logon.',
-    $command
+    $startupCommand
 )
 Write-Host "startup entry: $cmd"
 

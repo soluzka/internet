@@ -2,8 +2,10 @@
     Start everything the website needs on this computer, and do nothing if it is
     already running.
 
-    Two processes, and the page finds both on its own:
+    Three processes, and the page finds them on its own:
 
+      5001  app.py               the site itself: Flask, Socket.IO and the
+                                 SQLite index
       8080  downloader_service   Flask + yt-dlp, no GPU, about 60 MB
       8090  song_service         ACE-Step on CUDA, warmed up so the first
                                  composed song does not also pay for the load
@@ -12,7 +14,7 @@
     is not answering. Run it at logon and the whole thing comes back after a
     reboot with no one clicking anything.
 
-    -Watch stays running afterwards and checks both ports every two minutes,
+    -Watch stays running afterwards and checks all three ports every two minutes,
     starting a service again if it has gone away. A logon entry only covers a
     reboot; this covers the machine staying on while a service dies, which is
     what happened on 8 Nov 2026 - the crash took both services and nothing was
@@ -24,6 +26,7 @@
 
 [CmdletBinding()]
 param(
+    [int]$WebPort = 5001,
     [int]$DownloadPort = 8080,
     [int]$SongPort = 8090,
     [switch]$NoWarm,
@@ -33,6 +36,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+
+# A logon run has no console to read afterwards, so everything this run prints
+# is also written to a file: "an error flashed up" is not diagnosable. A second
+# run cannot take the same transcript, so failure here is not fatal.
+try {
+    Start-Transcript -Path (Join-Path $root 'build\launcher_run.log') -Append | Out-Null
+} catch { }
 
 # A line per run, so "the site started it" can be checked instead of assumed.
 try {
@@ -76,8 +86,10 @@ function Trace([string]$text) {
     } catch { }
 }
 
-function Answers([int]$port) {
-    $code = & curl.exe -s -o NUL -w '%{http_code}' --max-time 3 "http://127.0.0.1:$port/health"
+# The services answer /health; the site answers / with its page, so the path the
+# probe asks for is a parameter rather than assumed.
+function Answers([int]$port, [string]$path = '/health') {
+    $code = & curl.exe -s -o NUL -w '%{http_code}' --max-time 3 "http://127.0.0.1:$port$path"
     return ($code -eq '200')
 }
 
@@ -142,6 +154,29 @@ if (Answers $SongPort) {
     Say "song service starting on 127.0.0.1:$SongPort, warming CUDA (log: song_service\logs\service_out.log)"
 }
 
+# --- the site -------------------------------------------------------------
+# app.py is the page itself, and it is the one process whose absence is noticed
+# first, so it is started here with the two AI services rather than by hand.
+# The marker is this root's venv python: every service is called app.py, so the
+# name alone would match all three.
+$sitePython = Join-Path $root '.venv\Scripts\python.exe'
+$siteMarker = "*$($root)\.venv\Scripts\python.exe*"
+
+if (Answers $WebPort '/') {
+    Say "site already on 127.0.0.1:$WebPort"
+} elseif (Starting $siteMarker) {
+    Say 'site is still starting, leaving it alone'
+} elseif (-not (Test-Path $sitePython)) {
+    Say "site: $sitePython is missing (create it with python -m venv .venv)"
+} else {
+    $env:PORT = "$WebPort"
+    Start-Process -FilePath $sitePython -ArgumentList 'app.py' -WorkingDirectory $root `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput (Join-Path $root 'run_web.log') `
+        -RedirectStandardError (Join-Path $root 'run_web.err') | Out-Null
+    Say "site starting on 127.0.0.1:$WebPort (log: run_web.log)"
+}
+
 $songHealth = & curl.exe -s --max-time 4 "http://127.0.0.1:$SongPort/health"
 if ($songHealth) { Say "song now: $songHealth" } else { Say 'song: still loading, check again in a minute' }
 
@@ -162,7 +197,7 @@ if ($Watch) {
     }
 
     Trace 'watchdog started'
-    Say 'watching both services every 2 minutes'
+    Say 'watching all three services every 2 minutes'
 
     while ($true) {
         Start-Sleep -Seconds 120
@@ -171,6 +206,7 @@ if ($Watch) {
         # is not answering is still importing torch or waiting on the model, so
         # it is left alone; only a port with no process behind it is restarted.
         $down = @()
+        if (-not (Answers $WebPort '/') -and -not (Starting $siteMarker)) { $down += 'site' }
         if (-not (Answers $DownloadPort) -and -not (Starting '*downloader_service*')) { $down += 'downloader' }
         if (-not (Answers $SongPort) -and -not (Starting '*song_service*')) { $down += 'song service' }
 
