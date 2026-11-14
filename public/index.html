@@ -3473,11 +3473,23 @@
                     if (response.ok) { info = await response.json(); break; }
                 } catch (err) {}
             }
+            // The button follows the same answer, so both devices read the same
+            // way: AI ready wherever the model answers, rather than only on the PC
+            // that was able to launch it.
+            const wakeBtn = document.getElementById('wakeBtn');
             if (!info) {
                 chip.dataset.state = 'offline';
                 text.textContent = 'AI off';
                 chip.title = 'The song model is not running on this machine. Press Start the AI.';
+                if (wakeBtn && wakeBtn.dataset.state !== 'starting') {
+                    wakeBtn.textContent = 'Start the AI';
+                    wakeBtn.dataset.state = '';
+                }
                 return;
+            }
+            if (wakeBtn && wakeBtn.dataset.state !== 'starting') {
+                wakeBtn.textContent = 'AI ready';
+                wakeBtn.dataset.state = 'ready';
             }
             const onCuda = String(info.device || '').toLowerCase() === 'cuda';
             chip.dataset.state = onCuda ? 'live' : 'retrying';
@@ -3489,34 +3501,62 @@
                 : 'Torch cannot see a CUDA device, so songs and lyrics will be very slow.';
         }
 
-        function wakeLocalAI() {
+        // The AI belongs to this PC. From this PC's own browser it is reached on
+        // loopback; from a phone it is reached through the tunnel. Neither way is
+        // "not started", so the button asks both before it pretends to start
+        // anything - polling loopback alone is what left a phone showing the GPU
+        // while the button sat on Starting forever.
+        async function modelAnswers(base) {
+            if (!base) return false;
+            try {
+                const response = await fetchBounded(base + '/health', { cache: 'no-store' }, 4000);
+                return response.ok;
+            } catch (err) {
+                return false;
+            }
+        }
+
+        async function wakeLocalAI() {
             const btn = document.getElementById('wakeBtn');
+            const label = (text, state, title) => {
+                if (!btn) return;
+                btn.disabled = false;
+                btn.textContent = text;
+                btn.dataset.state = state || '';
+                btn.title = title || '';
+            };
+
+            if (btn) { btn.disabled = true; btn.textContent = 'Checking…'; }
+            const onThisPc = await modelAnswers('http://127.0.0.1:8090');
+            const overTunnel = onThisPc ? false : await modelAnswers(window.remoteSongApi);
+            if (onThisPc || overTunnel) {
+                await refreshGpu();
+                label('AI ready', 'ready', onThisPc
+                    ? 'The AI is running on this PC.'
+                    : 'The AI is running on your PC and answering through the tunnel.');
+                return;
+            }
+
+            // Nothing answers: only a browser on the PC can launch the service, and
+            // a link click is the one gesture browsers allow to do it.
             if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; btn.dataset.state = 'starting'; }
             try {
                 window.location.href = 'songsvc://start';
             } catch (err) {
-                if (btn) { btn.disabled = false; btn.textContent = 'Start the AI'; }
+                label('Start the AI', '', 'Nothing answered here or through the tunnel.');
                 return;
             }
             let tries = 0;
-            const finish = (ready) => {
-                if (ready) refreshGpu();
-                if (!btn) return;
-                btn.disabled = false;
-                btn.textContent = ready ? 'AI ready' : 'Start the AI';
-                btn.dataset.state = ready ? 'ready' : '';
-                if (!ready) btn.title = 'The launcher did not answer - is songsvc:// registered on this PC?';
-            };
             const timer = setInterval(async () => {
                 tries += 1;
-                let ready = false;
-                try {
-                    const response = await fetchBounded('http://127.0.0.1:8090/health', {}, 3000);
-                    ready = response.ok;
-                } catch (err) {}
+                const ready = (await modelAnswers('http://127.0.0.1:8090'))
+                    || (await modelAnswers(window.remoteSongApi));
                 if (ready || tries >= 40) {
                     clearInterval(timer);
-                    finish(ready);
+                    if (ready) await refreshGpu();
+                    label(ready ? 'AI ready' : 'Start the AI', ready ? 'ready' : '', ready
+                        ? 'The AI is running.'
+                        : 'Nothing answered on this PC or through the tunnel - the PC may be off or asleep.');
                 }
             }, 3000);
         }
