@@ -136,15 +136,61 @@ if (Answers $DownloadPort) {
     $python = Join-Path $service '.venv\Scripts\python.exe'
     if (-not (Test-Path $python)) {
         Say 'downloader: creating its environment (a minute or two)'
-        python -m venv (Join-Path $service '.venv')
-        & $python -m pip install -q --disable-pip-version-check -r (Join-Path $service 'requirements.txt')
+        $venvDir = Join-Path $service '.venv'
+        $venvLog = Join-Path $root 'build\downloader_venv.log'
+        # `python` on PATH on this machine is the Microsoft Store stub, which only
+        # prints "Python was not found". Building the venv by its bare name
+        # therefore failed silently and left a service that never started, so try
+        # each interpreter that is actually here. `uv venv --seed` matters: without
+        # --seed there is no pip in the venv and the install below cannot run.
+        #
+        # The preference is relaxed around these calls on purpose: uv and py write
+        # progress to stderr, and under this script's Stop preference a native
+        # command's stderr becomes a terminating error that aborted the whole
+        # launcher on the first try - before the site or the tunnel were reached.
+        $previous = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            if (Get-Command uv -ErrorAction SilentlyContinue) {
+                & uv venv $venvDir --python 3.11 --seed *> $venvLog
+            }
+            if (-not (Test-Path $python) -and (Get-Command py -ErrorAction SilentlyContinue)) {
+                & py -3.11 -m venv $venvDir *>> $venvLog
+            }
+            if (-not (Test-Path $python)) {
+                & python -m venv $venvDir *>> $venvLog
+            }
+        } catch {
+            Say "downloader: building its environment failed: $($_.Exception.Message)"
+        } finally {
+            $ErrorActionPreference = $previous
+        }
+        if (-not (Test-Path $python)) {
+            Say "downloader: no Python could build its environment (see build\downloader_venv.log)"
+        }
     }
-    $env:PORT = "$DownloadPort"
-    Start-Process -FilePath $python -ArgumentList 'app.py', '--role', 'downloader' -WorkingDirectory $service `
-        -WindowStyle Hidden `
-        -RedirectStandardOutput (Join-Path $root 'build\downloader_out.log') `
-        -RedirectStandardError (Join-Path $root 'build\downloader_err.log') | Out-Null
-    Say "downloader starting on 127.0.0.1:$DownloadPort (log: build\downloader_err.log)"
+    if (-not (Test-Path $python)) {
+        Say 'downloader: not started for that reason'
+    } else {
+        if (-not (Get-ChildItem (Join-Path $service '.venv\Lib\site-packages') -Filter 'flask*' -ErrorAction SilentlyContinue)) {
+            Say 'downloader: installing its packages'
+            $previous = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+                & $python -m pip install -q --disable-pip-version-check -r (Join-Path $service 'requirements.txt') *>> $venvLog
+            } catch {
+                Say "downloader: installing its packages failed: $($_.Exception.Message)"
+            } finally {
+                $ErrorActionPreference = $previous
+            }
+        }
+        $env:PORT = "$DownloadPort"
+        Start-Process -FilePath $python -ArgumentList 'app.py', '--role', 'downloader' -WorkingDirectory $service `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput (Join-Path $root 'build\downloader_out.log') `
+            -RedirectStandardError (Join-Path $root 'build\downloader_err.log') | Out-Null
+        Say "downloader starting on 127.0.0.1:$DownloadPort (log: build\downloader_err.log)"
+    }
 }
 
 # --- song service, on CUDA ----------------------------------------------

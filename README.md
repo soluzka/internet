@@ -88,7 +88,7 @@ is how this project deploys without a global install.
 ## Run it locally
 
 ```bash
-python -m venv .venv
+uv venv .venv --python 3.11 --seed
 .venv\Scripts\python -m pip install -r requirements.txt
 .venv\Scripts\python app.py
 ```
@@ -620,9 +620,25 @@ here travels in a clone: every `.venv` is gitignored, as are the models.
 
 | Environment | Who creates it | Command |
 | --- | --- | --- |
-| `downloader_service\.venv` | **the launcher, by itself** | normally none; the two commands it runs are below if you want to do it by hand |
-| `.venv` (root, the site) | **you** | `python -m venv .venv` then `.venv\Scripts\python -m pip install -r requirements.txt` |
-| `song_service\.venv` | **you**, before `install.py` | `python -m venv song_service\.venv` then `song_service\.venv\Scripts\python install.py` |
+| `downloader_service\.venv` | **the launcher, by itself** | normally none; the commands it runs are below if you want to do it by hand |
+| `.venv` (root, the site) | **you** | `uv venv .venv --python 3.11 --seed` then `.venv\Scripts\python -m pip install -r requirements.txt` |
+| `song_service\.venv` | **you**, before `install.py` | `uv venv song_service\.venv --python 3.11 --seed` then `song_service\.venv\Scripts\python install.py` |
+
+> **`python` is not a reliable command name here.** On this machine it resolves
+> to the Microsoft Store stub, which answers *"Python was not found"*; `py -3.11`
+> also fails, because the interpreter `uv` installed is registered with the `py`
+> launcher but cannot be started through it. What works is `uv`, which is
+> installed at `%USERPROFILE%\.local\bin\uv.exe`:
+>
+> ```
+> uv venv .venv --python 3.11 --seed
+> ```
+>
+> `--seed` is not optional: `uv venv` without it creates an environment with no
+> `pip`, and the next command then fails with *"No module named pip"*. Verified
+> end to end on 14 Nov 2026 â€” a venv built this way installed
+> `downloader_service\requirements.txt` and imported Flask 3.1.3 and yt-dlp
+> 2026.10.26 cleanly.
 
 The song service is the awkward one: `install.py` installs the CUDA torch wheel
 and the 10 GB of weights, but it does not create the venv it runs in, and the
@@ -633,9 +649,9 @@ minutes per song.
 So a fresh machine is:
 
 ```
-python -m venv .venv
+uv venv .venv --python 3.11 --seed
 .venv\Scripts\python -m pip install -r requirements.txt
-python -m venv song_service\.venv
+uv venv song_service\.venv --python 3.11 --seed
 song_service\.venv\Scripts\python install.py          # packages, then ~10 GB of weights
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\start_services.ps1
 ```
@@ -652,7 +668,7 @@ not the interpreter you want, or it was started when the folder was read-only â€
 those are the same two commands it runs:
 
 ```
-python -m venv downloader_service\.venv
+uv venv downloader_service\.venv --python 3.11 --seed
 downloader_service\.venv\Scripts\python -m pip install -r downloader_service\requirements.txt
 ```
 

@@ -51,10 +51,15 @@ and no manual cloning or pip archaeology. The file holds two lists:
 | `Qwen/Qwen2.5-1.5B-Instruct` — writes the lyrics | ≈3.1 GB | Apache-2.0 |
 
 The commands below assume `song_service\.venv` exists; create it first, because
-`install.py` installs into whatever interpreter runs it and does not build its own:
+`install.py` installs into whatever interpreter runs it and does not build its own.
+`uv` rather than `python -m venv` is deliberate: on Windows `python` is often the
+Microsoft Store stub, and `uv venv` needs `--seed` to put `pip` inside the
+environment. `py -3.11 -m venv` also fails on this machine, where the interpreter
+`uv` installed is registered with the `py` launcher but cannot be started through
+it.
 
 ```
-python -m venv song_service\.venv                              # once, on a new machine
+uv venv song_service\.venv --python 3.11 --seed                # once, on a new machine
 song_service\.venv\Scripts\python.exe install.py            # packages + both models
 song_service\.venv\Scripts\python.exe install.py --packages   # code only
 song_service\.venv\Scripts\python.exe install.py --weights    # models only
