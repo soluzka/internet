@@ -27,7 +27,7 @@ import time
 import traceback
 import uuid
 
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, jsonify, request, send_file, stream_with_context
 from flask_cors import CORS
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -433,6 +433,58 @@ def _run_job(token, prompt, lyrics, seconds, steps, seed):
         traceback.print_exc()
         _set(token, status='error', error=str(exc)[:400],
              elapsed=round(time.time() - started, 1))
+
+
+@app.route('/pc/<path:rest>', methods=['GET', 'POST', 'HEAD', 'OPTIONS'])
+def pc_proxy(rest):
+    """The PC's downloader, carried on the one address the internet reaches.
+
+    Playing a TikTok or a Dailymotion card means yt-dlp fetching the file on this
+    machine, and that list only ever lives on loopback - a phone cannot reach it,
+    so the player had nothing to fetch and every non-YouTube card failed there
+    while working on the PC. This hands the request to the downloader unchanged
+    and streams the answer back, so the same tunnel that carries songs carries the
+    video too. Loops are avoided: the prefix is /pc and the downloader has no such
+    route of its own.
+    """
+    if request.method == 'OPTIONS':
+        return ('', 204)
+
+    import urllib.error
+    import urllib.request
+
+    target = 'http://127.0.0.1:8080/' + rest
+    query = request.query_string.decode('latin-1')
+    if query:
+        target += '?' + query
+
+    headers = {}
+    if request.content_type:
+        headers['Content-Type'] = request.content_type
+    range_header = request.headers.get('Range')
+    if range_header:
+        headers['Range'] = range_header  # seeking in a playing video needs it
+    data = None if request.method in ('GET', 'HEAD') else request.get_data()
+
+    upstream = urllib.request.Request(target, data=data, headers=headers,
+                                      method=request.method)
+    try:
+        answer = urllib.request.urlopen(upstream, timeout=900)
+    except urllib.error.HTTPError as exc:
+        return app.response_class(exc.read(), status=exc.code,
+                                  mimetype=exc.headers.get('Content-Type', 'application/json'))
+    except Exception as exc:  # noqa: BLE001 - the downloader being down is normal
+        return jsonify({'error': 'The downloader on this PC is not answering: %s' % exc}), 503
+
+    response = app.response_class(
+        stream_with_context(iter(lambda: answer.read(65536), b'')),
+        status=getattr(answer, 'status', 200),
+        mimetype=answer.headers.get('Content-Type', 'application/octet-stream'))
+    for header in ('Content-Length', 'Content-Range', 'Accept-Ranges', 'Content-Disposition'):
+        value = answer.headers.get(header)
+        if value:
+            response.headers[header] = value
+    return response
 
 
 @app.route('/api/top', methods=['POST', 'OPTIONS'])

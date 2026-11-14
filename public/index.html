@@ -4670,8 +4670,23 @@
                 });
 
                 try {
-                    const response = await fetch(stream.src, { signal: playerFetch.signal });
-                    if (!response.ok) throw new Error('status ' + response.status);
+                    // On a phone, 127.0.0.1 is the phone: the card's own stream has to
+                    // arrive through the tunnel, which carries the downloader's routes
+                    // under /pc. The PC keeps using loopback, so nothing gets slower
+                    // where it already worked.
+                    const path = String(stream.src).replace(/^https?:\/\/[^/]+/, '');
+                    const candidates = [stream.src];
+                    if (window.remoteSongApi) candidates.push(window.remoteSongApi + '/pc' + path);
+                    let response = null;
+                    for (const candidate of candidates) {
+                        try {
+                            const attempt = await fetch(candidate, { signal: playerFetch.signal });
+                            if (attempt.ok) { response = attempt; break; }
+                        } catch (err) {
+                            if (playerFetch.signal.aborted) throw err;
+                        }
+                    }
+                    if (!response) throw new Error('no address answered');
                     const blob = await response.blob();
                     // A player that was replaced while this was downloading is not
                     // the one on screen any more.
