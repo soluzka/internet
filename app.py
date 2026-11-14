@@ -273,6 +273,32 @@ def _song_service_up(timeout=2.0):
         return False
 
 
+def _song_service_starting():
+    """True while a song service exists but is not answering yet.
+
+    Importing torch takes about forty seconds before /health replies, and treating
+    silence as "not running" made this app start a copy while the launcher's copy
+    was still loading - two 3.5B models competing for one card, neither finishing
+    and the port flapping. The service writes its pid as it starts, so that
+    window is now visible here instead of being filled with a duplicate.
+    """
+    for folder in _song_service_dirs():
+        path = os.path.join(folder, 'logs', 'service.pid')
+        try:
+            with open(path, encoding='utf-8') as handle:
+                pid = int(handle.read().strip())
+        except (OSError, ValueError):
+            continue
+        if pid <= 0 or pid == os.getpid():
+            continue
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            continue  # a pid left behind by a service that has gone
+        return True
+    return False
+
+
 _ai_install_proc = None
 
 
@@ -342,11 +368,18 @@ def _ensure_song_service():
         return None
     if _song_service_up():
         return None
+    if _song_service_starting():
+        return ('The local AI is still starting on this machine (it takes about a '
+                'minute to import torch), so nothing was started twice. Try again '
+                'shortly.')
 
     global _song_service_proc
     with _song_service_lock:
-        if _song_service_up():
-            return None
+        if _song_service_up() or _song_service_starting():
+            return None if _song_service_up() else (
+                'The local AI is still starting on this machine (it takes about a '
+                'minute to import torch), so nothing was started twice. Try again '
+                'shortly.')
         folders = _song_service_dirs()
         if not folders:
             return ('The local AI is not installed: no song_service folder beside '
@@ -378,7 +411,8 @@ def _ensure_song_service():
             env = dict(os.environ, SONG_PORT='8090')
             logger.info('Starting the local AI from %s', folder)
             _song_service_proc = subprocess.Popen(
-                [python, 'app.py'], cwd=folder, env=env, stdout=handle, stderr=handle,
+                [python, 'app.py', '--role', 'song'], cwd=folder, env=env,
+                stdout=handle, stderr=handle,
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             # Loading starts fast (the pipeline is built on the first job), so
             # waiting for the port is enough; the song request itself can take

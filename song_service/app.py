@@ -15,6 +15,7 @@ Nothing here is downloaded from a third party at request time: the checkpoint
 sits in ACE_CHECKPOINT and the weights were fetched once during setup.
 """
 
+import atexit
 import gc
 import os
 import re
@@ -31,6 +32,36 @@ from flask_cors import CORS
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+
+# Who owns this port, in a file any starter can read. Importing torch takes about
+# forty seconds before /health answers, and a starter that treats "no answer" as
+# "not running" starts a second copy that then fights this one for the card - one
+# launcher and the desktop app were doing exactly that. The pid is written here,
+# before the slow imports, so the window is covered from the first second.
+PIDFILE = os.path.join(HERE, 'logs', 'service.pid')
+
+
+def _write_pidfile():
+    try:
+        os.makedirs(os.path.dirname(PIDFILE), exist_ok=True)
+        with open(PIDFILE, 'w', encoding='utf-8') as handle:
+            handle.write(str(os.getpid()))
+    except OSError:
+        pass
+
+
+def _clear_pidfile():
+    try:
+        with open(PIDFILE, encoding='utf-8') as handle:
+            if handle.read().strip() != str(os.getpid()):
+                return  # another copy owns the file now; leave it alone
+        os.remove(PIDFILE)
+    except (OSError, ValueError):
+        pass
+
+
+_write_pidfile()
+atexit.register(_clear_pidfile)
 
 # The vendored ACE-Step checkout and its weights.
 ACE_REPO = os.environ.get('ACE_REPO', os.path.join(ROOT, 'third_party', 'ACE-Step'))
