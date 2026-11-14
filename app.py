@@ -454,6 +454,18 @@ def _forward(path, method='GET', payload=None, stream=False):
     return app.response_class(body, status=status, mimetype=content_type)
 
 
+@app.route('/health')
+def health():
+    """What the render will use, asked of the app instead of the model.
+
+    The page on this origin asks here. On another device - a Surface, a phone -
+    127.0.0.1:8090 is that device's own loopback, not this PC, so the app is the
+    only address a browser on the network can reach; this forwards the question
+    and answers with the service's own words.
+    """
+    return _forward('/health')
+
+
 @app.route('/api/lyrics', methods=['POST', 'OPTIONS'])
 def api_lyrics():
     if request.method == 'OPTIONS':

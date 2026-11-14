@@ -15,7 +15,14 @@
 //
 //   window.DOWNLOAD_API = 'https://dl.example.com';
 //
-window.DOWNLOAD_API = 'http://127.0.0.1:5001';
+//
+// On another device - a Surface, a phone - 127.0.0.1 is that device, not this
+// PC. A page the app itself serves (localhost or a LAN address) therefore
+// downloads from its own origin: the app answers /api/download there. Only a
+// page served from somewhere else has to be pointed back at this PC.
+const _onLocalMachine = /^(127\.|localhost$|\[::1\]$)/.test(location.hostname);
+const _onLocalNetwork = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(location.hostname);
+window.DOWNLOAD_API = (_onLocalMachine || _onLocalNetwork) ? '' : 'http://127.0.0.1:5001';
 
 // Where the song service lives, when not on this origin.
 //

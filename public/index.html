@@ -3416,7 +3416,13 @@
             const chip = document.getElementById('gpuChip');
             const text = document.getElementById('gpuText');
             if (!chip || !text) return;
+            // On another device - a Surface, a phone - 127.0.0.1 is that device,
+            // not this PC. The desktop app proxies the model, so a page it serves
+            // (localhost or a LAN address) asks its own origin first, and only a
+            // page served from somewhere else falls back to this PC's loopback.
+            const servedLocally = /^(127\.|localhost$|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(location.hostname);
             const bases = [
+                servedLocally ? location.origin : '',
                 'http://127.0.0.1:8090',
                 String(window.SONG_API || '').replace(/\/+$/, ''),
             ];
