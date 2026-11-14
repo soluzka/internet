@@ -620,7 +620,7 @@ here travels in a clone: every `.venv` is gitignored, as are the models.
 
 | Environment | Who creates it | Command |
 | --- | --- | --- |
-| `downloader_service\.venv` | **the launcher, by itself** | none — it runs `python -m venv` and installs `downloader_service\requirements.txt` the first time |
+| `downloader_service\.venv` | **the launcher, by itself** | normally none; the two commands it runs are below if you want to do it by hand |
 | `.venv` (root, the site) | **you** | `python -m venv .venv` then `.venv\Scripts\python -m pip install -r requirements.txt` |
 | `song_service\.venv` | **you**, before `install.py` | `python -m venv song_service\.venv` then `song_service\.venv\Scripts\python install.py` |
 
@@ -645,6 +645,23 @@ is missing. What it cannot supply is `build\song_endpoint.key`: without it the
 tunnel runs but the site is never told the address, so a phone still reports the
 AI as off. Copy that file across, or set `SONG_ENDPOINT_KEY` on the Worker to a
 new value and write the same value into the file.
+
+The downloader's environment is the one the launcher builds itself, so there is
+usually nothing to type. To build it by hand — because the launcher's `python` is
+not the interpreter you want, or it was started when the folder was read-only —
+those are the same two commands it runs:
+
+```
+python -m venv downloader_service\.venv
+downloader_service\.venv\Scripts\python -m pip install -r downloader_service\requirements.txt
+```
+
+It needs no torch: `downloader_service\requirements.txt` is Flask, `yt-dlp`,
+`curl_cffi`, `imageio-ffmpeg` (a bundled ffmpeg) and `requests` — nothing that
+touches the card, which is why this service starts in seconds where the song
+service takes minutes. Run it by hand with
+`downloader_service\.venv\Scripts\python app.py` from inside that folder, or let
+the launcher do it on **8080**.
 
 ### Do not copy a venv between machines
 
