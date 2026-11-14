@@ -3488,6 +3488,16 @@
             } catch (err) {}
         })();
 
+        // When the badge last got a real answer. A timeout while the model loads is
+        // not the service disappearing, and treating it as such is what made a
+        // refresh lose the GPU.
+        let lastGoodAt = 0;
+        // True only while a press is being handled, so the badge can keep the button
+        // current the rest of the time. Reading the button's own state for that was
+        // wrong: "warming" and "being pressed" both look like starting, and the
+        // button then stayed on "AI warming…" after the model had finished.
+        let wakeBusy = false;
+
         async function refreshGpu() {
             const chip = document.getElementById('gpuChip');
             const text = document.getElementById('gpuText');
@@ -3520,32 +3530,56 @@
             // that was able to launch it.
             const wakeBtn = document.getElementById('wakeBtn');
             if (!info) {
+                // A probe that times out is not the same as a service that is gone:
+                // while the weights load, this machine can miss the twelve seconds
+                // and then answer again. If it answered recently, say it is busy
+                // rather than losing the GPU on every refresh.
+                if (lastGoodAt && Date.now() - lastGoodAt < 4 * 60 * 1000) {
+                    chip.dataset.state = 'retrying';
+                    text.textContent = 'CUDA · busy loading';
+                    chip.title = 'The model is being loaded onto the card, so answers time out for a few minutes. It is still running.';
+                    if (wakeBtn && !wakeBusy) {
+                        wakeBtn.textContent = 'AI warming…';
+                        wakeBtn.dataset.state = 'starting';
+                        wakeBtn.title = 'The model is still loading; songs start when it is ready.';
+                    }
+                    return;
+                }
                 chip.dataset.state = 'offline';
                 text.textContent = 'AI off';
                 chip.title = 'The song model is not running on this machine. Press Start the AI.';
-                if (wakeBtn && wakeBtn.dataset.state !== 'starting') {
+                if (wakeBtn && !wakeBusy) {
                     wakeBtn.textContent = 'Start the AI';
                     wakeBtn.dataset.state = '';
                 }
                 return;
             }
+            lastGoodAt = Date.now();
             const onCuda = String(info.device || '').toLowerCase() === 'cuda';
             // Answering is not the same as being ready. Right after a restart the
             // service replies within seconds while ACE-Step is still being loaded
             // onto the card, and calling that "AI ready" is what made a restart
             // look broken: the badge was green and a song still waited minutes.
             const loaded = info.loaded === true;
+            // The service says how long its warm has been running, so the badge can
+            // count instead of leaving someone wondering whether it is stuck.
+            const warmSeconds = Number(info.warming_seconds || 0);
+            const clock = warmSeconds >= 60
+                ? Math.floor(warmSeconds / 60) + 'm ' + String(warmSeconds % 60).padStart(2, '0') + 's'
+                : warmSeconds + 's';
             chip.dataset.state = onCuda && loaded ? 'live' : 'retrying';
             text.textContent = onCuda
                 ? (loaded ? 'CUDA · ' + String(info.gpu || 'GPU').replace(/^NVIDIA\s+/i, '')
-                          : 'CUDA · warming up')
+                          : (warmSeconds ? 'CUDA · warming ' + clock : 'CUDA · warming up'))
                 : 'CPU only';
             chip.title = !onCuda
                 ? 'Torch cannot see a CUDA device, so songs and lyrics will be very slow.'
                 : loaded
                     ? `${info.gpu}, ${info.vram_gb} GB - model loaded and ready`
-                    : `${info.gpu} - the model is still loading onto the card; a song waits for it to finish`;
-            if (wakeBtn && wakeBtn.dataset.state !== 'starting') {
+                    : info.warm_failed
+                        ? `${info.gpu} - loading the model failed: ${info.warm_failed}`
+                        : `${info.gpu} - the model is still loading onto the card (${clock}); a song waits for it to finish`;
+            if (wakeBtn && !wakeBusy) {
                 wakeBtn.textContent = loaded ? 'AI ready' : 'AI warming…';
                 wakeBtn.dataset.state = loaded ? 'ready' : 'starting';
                 wakeBtn.title = loaded
@@ -3570,6 +3604,17 @@
         }
 
         async function wakeLocalAI() {
+            // The badge keeps the button current except while a press is in flight;
+            // this flags exactly that window, however the press ends.
+            wakeBusy = true;
+            try {
+                return await wakeLocalAIStep();
+            } finally {
+                wakeBusy = false;
+            }
+        }
+
+        async function wakeLocalAIStep() {
             const btn = document.getElementById('wakeBtn');
             const label = (text, state, title) => {
                 if (!btn) return;

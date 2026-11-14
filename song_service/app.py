@@ -102,6 +102,10 @@ DEFAULT_STEPS = int(os.environ.get('ACE_STEPS', '30'))
 MAX_SECONDS = float(os.environ.get('ACE_MAX_SECONDS', '180'))
 
 _pipeline = None
+# When the warm started, and why it failed if it did: /health reports both, so a
+# page can show "2m 10s so far" rather than a bare loaded: false.
+_warm_started = None
+_warm_failed = None
 _pipeline_lock = threading.Lock()
 _gpu_lock = threading.Lock()      # one generation at a time
 _jobs = {}
@@ -575,8 +579,15 @@ def _gpu():
 @app.route('/health')
 def health():
     ready = _pipeline is not None
+    # How long the warm has been running, so the page can say "2m 10s" instead of
+    # leaving someone guessing whether it is working or stuck. This machine needs
+    # minutes, not seconds, and being told which is not the same as waiting blind.
+    warming_for = int(time.time() - _warm_started) if (_warm_started and not ready) else None
     return jsonify({
         'ok': True,
+        'warming': bool(_warm_started and not ready and not _warm_failed),
+        'warming_seconds': warming_for,
+        'warm_failed': _warm_failed,
         'model': 'ACE-Step v1 3.5B',
         'checkpoint': CHECKPOINT,
         'checkpoint_present': os.path.isdir(CHECKPOINT),
@@ -721,18 +732,24 @@ def last_song():
 def _warm():
     """Put the song model on the card at startup instead of on the first song.
 
+    Records when it started and how it ended, so /health can report "warming, 2m
+    10s so far" or the reason it failed rather than a bare loaded: false.
+
     Everything else loading lazily keeps the service quick to answer, but the
     first compose then pays for the load. With SONG_WARM=1 that minute is spent
     quietly after start instead, and health reports loaded: true when it is
     ready. Off by default, because holding 8 GB of VRAM from the moment a
     service starts is not what every machine wants.
     """
+    global _warm_started, _warm_failed
+    _warm_started = time.time()
     try:
         info = _gpu()
         print(f'warming on {info["device"]}: {info.get("gpu") or "cpu"}', flush=True)
         _load_pipeline()
-        print('song model ready', flush=True)
+        print('song model ready after %.0fs' % (time.time() - _warm_started), flush=True)
     except Exception as exc:  # noqa: BLE001
+        _warm_failed = str(exc)[:300]
         print(f'warm load failed: {exc}', flush=True)
 
 
