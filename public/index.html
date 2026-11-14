@@ -2510,21 +2510,7 @@
             // A model address pasted into the page is remembered in this
             // browser, so a tunnel URL that changes on every restart never
             // needs a new build: paste it once and keep singing.
-            const bases = [];
-            try {
-                const saved = (localStorage.getItem('songApi') || '').trim().replace(/\/+$/, '');
-                if (saved) bases.push(saved);
-            } catch (err) {}
-            // The Worker answers 501 here: it has no GPU. Once that is seen the
-            // page stops asking it, which is where those 501s in the console
-            // came from on every compose.
-            if (window.edgeSongModel !== false && !edgeModelKnownOff()) bases.push('');
-            if (!bases.includes('http://127.0.0.1:8090')) bases.push('http://127.0.0.1:8090');
-            // The tunnel address changes whenever it restarts; the PC publishes
-            // the current one to this site, so a device away from home finds the
-            // model without anyone pasting a new URL into it.
-            if (window.remoteSongApi) bases.push(window.remoteSongApi);
-            if (window.SONG_API) bases.push(String(window.SONG_API).replace(/\/+$/, ''));
+            const bases = await modelBases(true);
 
             for (const base of bases) {
                 // The model on this machine has to wake up and write, which is
@@ -3333,21 +3319,7 @@
             // here, so the detail is affordable and the layers land more cleanly.
             const payload = { prompt: modelPrompt(summary, seed), lyrics: lyricText, seconds, steps: 24 };
 
-            // A model address pasted into the page is remembered in this
-            // browser, so a tunnel URL that changes on every restart never
-            // needs a new build: paste it once and keep singing.
-            const bases = [];
-            try {
-                const saved = (localStorage.getItem('songApi') || '').trim().replace(/\/+$/, '');
-                if (saved) bases.push(saved);
-            } catch (err) {}
-            if (window.edgeSongModel !== false && !edgeModelKnownOff()) bases.push('');
-            if (!bases.includes('http://127.0.0.1:8090')) bases.push('http://127.0.0.1:8090');
-            // The tunnel address changes whenever it restarts; the PC publishes
-            // the current one to this site, so a device away from home finds the
-            // model without anyone pasting a new URL into it.
-            if (window.remoteSongApi) bases.push(window.remoteSongApi);
-            if (window.SONG_API) bases.push(String(window.SONG_API).replace(/\/+$/, ''));
+            const bases = await modelBases(false);
 
             let answer = null;
             window._modelNote = '';
@@ -3429,6 +3401,38 @@
         // guessing from the outside. Off means the service is not up at all, "CPU
         // only" means torch could not see a card, and the card's name means the
         // next render will use CUDA.
+        // Where to ask for lyrics or a song, in the order worth trying.
+        //
+        // A saved address ("Connect my model") is remembered per browser and is
+        // the first thing tried, which makes it the most likely thing to be
+        // stale - a tunnel name that died with its last restart. Trusting it cost
+        // the entire timeout before the working address was even reached, and
+        // that looks exactly like the song refusing to start. So it is probed
+        // first and skipped when it does not answer.
+        async function modelBases(includeEdge) {
+            const bases = [];
+            const add = (value) => {
+                const clean = String(value || '').trim().replace(/\/+$/, '');
+                if (clean && !bases.includes(clean)) bases.push(clean);
+            };
+            let saved = '';
+            try { saved = (localStorage.getItem('songApi') || '').trim().replace(/\/+$/, ''); } catch (err) {}
+            if (saved) {
+                try {
+                    const probe = await fetchBounded(saved + '/health', {}, 4000);
+                    if (probe.ok) add(saved);
+                } catch (err) {}
+            }
+            // The Worker answers 501 here: it has no GPU. Once that is seen the
+            // page stops asking it, which is where those 501s in the console came
+            // from on every compose.
+            if (includeEdge && window.edgeSongModel !== false && !edgeModelKnownOff()) bases.push('');
+            add('http://127.0.0.1:8090');
+            add(window.remoteSongApi);
+            if (window.SONG_API) add(window.SONG_API);
+            return bases;
+        }
+
         // The address of this PC's model, as published to this site. Only an
         // address that is not loopback is useful: on a phone or a Surface,
         // 127.0.0.1 is that device, which is the whole reason the tunnel exists.
