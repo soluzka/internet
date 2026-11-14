@@ -14,6 +14,10 @@
     is not answering. Run it at logon and the whole thing comes back after a
     reboot with no one clicking anything.
 
+    A Quick Tunnel can be started too (-NoTunnel skips it), giving the model an
+    https address from outside the home network; the address is published to the
+    site so the page finds it without anyone pasting a new one.
+
     -Watch stays running afterwards and checks all three ports every two minutes,
     starting a service again if it has gone away. A logon entry only covers a
     reboot; this covers the machine staying on while a service dies, which is
@@ -30,6 +34,7 @@ param(
     [int]$DownloadPort = 8080,
     [int]$SongPort = 8090,
     [switch]$NoWarm,
+    [switch]$NoTunnel,
     [switch]$Quiet,
     [switch]$Watch
 )
@@ -185,6 +190,78 @@ if (Answers $WebPort '/') {
     Say "site starting on 127.0.0.1:$WebPort (log: run_web.log)"
 }
 
+# --- the tunnel -------------------------------------------------------------
+# A Quick Tunnel gives the model an https address the internet can reach, which
+# is what a phone on mobile data needs. Its name changes on every start, so the
+# address is written to build\tunnel_url.txt and published to the site: the page
+# reads it from there, and nobody pastes a new one into each device.
+$cloudflared = Join-Path $root 'tools\bin\cloudflared.exe'
+$tunnelLog = Join-Path $root 'tunnel.log'
+$siteUrl = 'https://browser.bpiersing.workers.dev'
+
+if ($NoTunnel) {
+    Say 'tunnel: skipped (-NoTunnel)'
+} elseif (-not (Test-Path $cloudflared)) {
+    Say 'tunnel: cloudflared is missing, so the model stays on this network'
+} else {
+    $live = @(Get-Process cloudflared -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -eq $cloudflared })
+    if ($live.Count -gt 0) {
+        Say 'tunnel: already running'
+    } else {
+        Remove-Item $tunnelLog -ErrorAction SilentlyContinue
+        Start-Process -FilePath $cloudflared -WorkingDirectory $root -ArgumentList @(
+            'tunnel', '--config', 'tools\bin\quick-tunnel.yml',
+            '--url', 'http://127.0.0.1:8090', '--no-autoupdate',
+            '--logfile', 'tunnel.log', '--loglevel', 'info'
+        ) -WindowStyle Hidden | Out-Null
+        Say 'tunnel: starting'
+    }
+
+    # The address reaches the log either way: a fresh tunnel writes it as it
+    # connects, and one already up wrote it when it started.
+    $tunnelUrl = ''
+    for ($t = 0; $t -lt 20; $t++) {
+        if (Test-Path $tunnelLog) {
+            $tunnelUrl = (Select-String -Path $tunnelLog -Pattern 'https://[a-z0-9-]+\.trycloudflare\.com' |
+                ForEach-Object { $_.Matches[0].Value } | Select-Object -Last 1)
+            if ($tunnelUrl) { break }
+        }
+        Start-Sleep -Seconds 2
+    }
+
+    if (-not $tunnelUrl) {
+        Say 'tunnel: no address yet, see tunnel.log'
+    } else {
+        try { Set-Content -Path (Join-Path $root 'build\tunnel_url.txt') -Value $tunnelUrl -Encoding ascii } catch { }
+        try { Set-Clipboard -Value $tunnelUrl } catch { }
+        Say "tunnel: $tunnelUrl"
+
+        $keyFile = Join-Path $root 'build\song_endpoint.key'
+        if (Test-Path $keyFile) {
+            $key = (Get-Content $keyFile -Raw).Trim()
+            if ($key) {
+                # The JSON goes through a file: curl.exe on Windows mangles quotes
+                # that arrive inside an argument, and the site answered "expected
+                # JSON" while the address looked perfectly fine on screen.
+                $payload = Join-Path $root 'build\tunnel_publish.json'
+                try {
+                    Set-Content -Path $payload -Encoding ascii `
+                        -Value ('{"url":"' + $tunnelUrl + '"}')
+                    $answer = & curl.exe -s --max-time 15 -X POST "$siteUrl/api/song/endpoint" `
+                        -H 'Content-Type: application/json' -H "x-song-key: $key" `
+                        --data-binary "@$payload"
+                    Say "tunnel: published to the site: $answer"
+                } finally {
+                    Remove-Item $payload -ErrorAction SilentlyContinue
+                }
+            }
+        } else {
+            Say 'tunnel: build\song_endpoint.key is missing, so the site was not told the address'
+        }
+    }
+}
+
 $songHealth = & curl.exe -s --max-time 4 "http://127.0.0.1:$SongPort/health"
 if ($songHealth) { Say "song now: $songHealth" } else { Say 'song: still loading, check again in a minute' }
 
@@ -215,6 +292,7 @@ if ($Watch) {
         # it is left alone; only a port with no process behind it is restarted.
         $down = @()
         if (-not (Answers $WebPort '/') -and -not (Starting $siteMarker)) { $down += 'site' }
+        if (-not $NoTunnel -and -not @(Get-Process cloudflared -ErrorAction SilentlyContinue).Count) { $down += 'tunnel' }
         if (-not (Answers $DownloadPort) -and -not (Starting '*--role downloader*')) { $down += 'downloader' }
         if (-not (Answers $SongPort) -and -not (Starting '*--role song*')) { $down += 'song service' }
 

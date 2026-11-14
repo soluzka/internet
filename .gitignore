@@ -22,6 +22,12 @@ build/commit_msg*.txt
 build/served_*
 build/inline.js
 build/launcher_trace.txt
+build/launcher_run.log
+build/watchdog_*.log
+build/tunnel_url.txt
+# The key the launcher uses to publish the tunnel address to the Worker. A
+# secret in a commit is a secret to everyone.
+build/song_endpoint.key
 build/*.wav
 build/*.mp3
 build/*.json

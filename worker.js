@@ -55,6 +55,13 @@ const SYNC_ROUTE = /^\/api\/sync$/i;
 // These paths exist so the page gets a straight answer instead of a 405 from
 // the static asset handler, and so an address can be supplied with SONG_API
 // when the model is reachable from the internet.
+// A Quick Tunnel gets a new name every time it restarts, so the PC publishes the
+// current address here and the page asks its own origin for it. Without this,
+// every device away from home needed the new address pasted in by hand. Reading
+// is public because the address itself is public; writing needs the key the
+// launcher holds in build\song_endpoint.key.
+const ENDPOINT_ROUTE = /^\/api\/song\/endpoint$/i;
+
 const SONG_ROUTES = [
   /^\/api\/lyrics$/i,
   /^\/api\/song$/i,
@@ -103,6 +110,10 @@ export default {
       return syncSession(env, request, url);
     }
 
+    if (ENDPOINT_ROUTE.test(url.pathname)) {
+      return songEndpoint(request, env);
+    }
+
     if (SONG_ROUTES.some((route) => route.test(url.pathname))) {
       return song(request, env, url);
     }
@@ -110,6 +121,36 @@ export default {
     return env.ASSETS.fetch(request);
   },
 };
+
+async function songEndpoint(request, env) {
+  if (request.method === 'POST') {
+    const expected = env.SONG_ENDPOINT_KEY || '';
+    const given = request.headers.get('x-song-key') || '';
+    if (!expected) {
+      return json({ error: 'Publishing is disabled: this Worker has no SONG_ENDPOINT_KEY.' }, 503);
+    }
+    if (given !== expected) return json({ error: 'Wrong key.' }, 403);
+    if (!env.STATS) return json({ error: 'No KV namespace is attached.' }, 501);
+
+    let body = {};
+    try {
+      body = await request.json();
+    } catch (err) {
+      return json({ error: 'Expected JSON: {"url": "https://..."}' }, 400);
+    }
+    const value = String((body && body.url) || '').trim().replace(/\/+$/, '');
+    if (value && !/^https?:\/\/[^\s]+$/i.test(value)) {
+      return json({ error: 'Not an http(s) address.' }, 400);
+    }
+    if (value) await env.STATS.put('song_api', value);
+    else await env.STATS.delete('song_api');
+    return json({ ok: true, url: value });
+  }
+
+  const stored = env.STATS ? await env.STATS.get('song_api') : null;
+  return json({ url: stored || env.SONG_API || '' });
+}
+
 
 async function song(request, env, url) {
   const base = String(env.SONG_API || '').trim().replace(/\/+$/, '');

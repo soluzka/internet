@@ -2520,6 +2520,10 @@
             // came from on every compose.
             if (window.edgeSongModel !== false && !edgeModelKnownOff()) bases.push('');
             if (!bases.includes('http://127.0.0.1:8090')) bases.push('http://127.0.0.1:8090');
+            // The tunnel address changes whenever it restarts; the PC publishes
+            // the current one to this site, so a device away from home finds the
+            // model without anyone pasting a new URL into it.
+            if (window.remoteSongApi) bases.push(window.remoteSongApi);
             if (window.SONG_API) bases.push(String(window.SONG_API).replace(/\/+$/, ''));
 
             for (const base of bases) {
@@ -3330,6 +3334,10 @@
             } catch (err) {}
             if (window.edgeSongModel !== false && !edgeModelKnownOff()) bases.push('');
             if (!bases.includes('http://127.0.0.1:8090')) bases.push('http://127.0.0.1:8090');
+            // The tunnel address changes whenever it restarts; the PC publishes
+            // the current one to this site, so a device away from home finds the
+            // model without anyone pasting a new URL into it.
+            if (window.remoteSongApi) bases.push(window.remoteSongApi);
             if (window.SONG_API) bases.push(String(window.SONG_API).replace(/\/+$/, ''));
 
             let answer = null;
@@ -3412,6 +3420,20 @@
         // guessing from the outside. Off means the service is not up at all, "CPU
         // only" means torch could not see a card, and the card's name means the
         // next render will use CUDA.
+        // The address of this PC's model, as published to this site. Only an
+        // address that is not loopback is useful: on a phone or a Surface,
+        // 127.0.0.1 is that device, which is the whole reason the tunnel exists.
+        window.remoteSongApi = '';
+        (async function findRemoteSongApi() {
+            try {
+                const response = await fetchBounded('/api/song/endpoint', { cache: 'no-store' }, 6000);
+                if (!response.ok) return;
+                const info = await response.json();
+                const url = String(info.url || '').replace(/\/+$/, '');
+                if (url && !/(127\.0\.0\.1|localhost)/.test(url)) window.remoteSongApi = url;
+            } catch (err) {}
+        })();
+
         async function refreshGpu() {
             const chip = document.getElementById('gpuChip');
             const text = document.getElementById('gpuText');
@@ -3424,6 +3446,7 @@
             const bases = [
                 servedLocally ? location.origin : '',
                 'http://127.0.0.1:8090',
+                String(window.remoteSongApi || ''),
                 String(window.SONG_API || '').replace(/\/+$/, ''),
             ];
             let info = null;
