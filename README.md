@@ -228,11 +228,10 @@ The song service keeps its own environment, separate from the web app's venv,
 because its dependencies are heavy and its CUDA wheels must not leak into the
 Flask app. From the repo root:
 
-```bash
-cd song_service
-python -m venv .venv
-.venv\Scripts\python install.py --check      # report what is present, change nothing
-.venv\Scripts\python install.py              # packages, then weights
+```
+uv venv song_service\.venv --python 3.11 --seed              # once; see "Building the environments"
+song_service\.venv\Scripts\python song_service\install.py --check   # report, change nothing
+song_service\.venv\Scripts\python song_service\install.py          # packages, then weights
 ```
 
 `install.py` reads `song_service/models.json`, which is the one place versions
@@ -613,71 +612,129 @@ rather than turned into a query.
 | `/api/song/endpoint` | Worker | The tunnel address the PC last published; `GET` is public, `POST` needs `x-song-key` |
 | `/pc/<path>` | song service | Forwards to the downloader on 8080, so a phone can use Top 100, the player and downloads |
 
-## Setting up on another PC
+## Building the environments
 
-Three Python environments, not one, and they differ in who creates them. Nothing
-here travels in a clone: every `.venv` is gitignored, as are the models.
+There are three Python environments, not one, one per service. A clone contains
+**none** of them: `.venv`, `song_service\.venv` and `downloader_service\.venv` are
+all gitignored, as are the model weights.
 
-| Environment | Who creates it | Command |
+All three use **Python 3.11** and are built with **`uv`**, in this repository
+root. Run the commands from the root, in this order.
+
+### Why `uv` and not `python -m venv`
+
+On this machine `python` is not Python: it resolves to the Microsoft Store stub
+at `…\WindowsApps\python.exe`, which only answers *"Python was not found; run
+without arguments to install from the Microsoft Store"*. `py -3.11 -m venv` fails
+too — the interpreter `uv` installed is registered with the `py` launcher but
+cannot be started through it. `uv` is the one that works, installed at
+`%USERPROFILE%\.local\bin\uv.exe`; if it is missing, use its installer from
+<https://astral.sh/uv>.
+
+`--seed` is not optional. `uv venv` without it creates an environment with **no
+pip**, and the install on the next line dies with *"No module named pip"*.
+
+| Environment | Built by | Used for |
 | --- | --- | --- |
-| `downloader_service\.venv` | **the launcher, by itself** | normally none; the commands it runs are below if you want to do it by hand |
-| `.venv` (root, the site) | **you** | `uv venv .venv --python 3.11 --seed` then `.venv\Scripts\python -m pip install -r requirements.txt` |
-| `song_service\.venv` | **you**, before `install.py` | `uv venv song_service\.venv --python 3.11 --seed` then `song_service\.venv\Scripts\python install.py` |
+| `.venv` | you (step 1) | the site on 5001 |
+| `downloader_service\.venv` | you, or the launcher on first run (step 2) | yt-dlp on 8080 |
+| `song_service\.venv` | you (step 3) — the launcher refuses to invent it | the model on 8090 |
 
-> **`python` is not a reliable command name here.** On this machine it resolves
-> to the Microsoft Store stub, which answers *"Python was not found"*; `py -3.11`
-> also fails, because the interpreter `uv` installed is registered with the `py`
-> launcher but cannot be started through it. What works is `uv`, which is
-> installed at `%USERPROFILE%\.local\bin\uv.exe`:
->
-> ```
-> uv venv .venv --python 3.11 --seed
-> ```
->
-> `--seed` is not optional: `uv venv` without it creates an environment with no
-> `pip`, and the next command then fails with *"No module named pip"*. Verified
-> end to end on 14 Nov 2026 — a venv built this way installed
-> `downloader_service\requirements.txt` and imported Flask 3.1.3 and yt-dlp
-> 2026.10.26 cleanly.
-
-The song service is the awkward one: `install.py` installs the CUDA torch wheel
-and the 10 GB of weights, but it does not create the venv it runs in, and the
-launcher refuses to invent one — it says *"run song_service\install.py first (it
-installs the CUDA torch)"* instead of starting a CPU-only service that would take
-minutes per song.
-
-So a fresh machine is:
+### 1. The site — `.venv`
 
 ```
 uv venv .venv --python 3.11 --seed
 .venv\Scripts\python -m pip install -r requirements.txt
-uv venv song_service\.venv --python 3.11 --seed
-song_service\.venv\Scripts\python install.py          # packages, then ~10 GB of weights
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\start_services.ps1
 ```
 
-The launcher then handles the downloader's venv, and fetches `cloudflared` if it
-is missing. What it cannot supply is `build\song_endpoint.key`: without it the
-tunnel runs but the site is never told the address, so a phone still reports the
-AI as off. Copy that file across, or set `SONG_ENDPOINT_KEY` on the Worker to a
-new value and write the same value into the file.
+Check it before going on — this is the exact import that a partially installed
+environment breaks, and the reason `requirements.txt` carries the note about
+PyInstaller:
 
-The downloader's environment is the one the launcher builds itself, so there is
-usually nothing to type. To build it by hand — because the launcher's `python` is
-not the interpreter you want, or it was started when the folder was read-only —
-those are the same two commands it runs:
+```
+.venv\Scripts\python -c "from flask_socketio import emit, SocketIO; print('site env ok')"
+```
+
+### 2. The downloader — `downloader_service\.venv`
 
 ```
 uv venv downloader_service\.venv --python 3.11 --seed
 downloader_service\.venv\Scripts\python -m pip install -r downloader_service\requirements.txt
 ```
 
-It needs no torch: `downloader_service\requirements.txt` is Flask, `yt-dlp`,
-`curl_cffi`, `imageio-ffmpeg` (a bundled ffmpeg) and `requests` — nothing that
-touches the card, which is why this service starts in seconds where the song
-service takes minutes. Run it by hand with
-`downloader_service\.venv\Scripts\python app.py` from inside that folder, or let
-the launcher do it on **8080**.
+Check:
+
+```
+downloader_service\.venv\Scripts\python -c "import flask, yt_dlp, curl_cffi, imageio_ffmpeg; print('downloader env ok', yt_dlp.version.__version__)"
+```
+
+You can skip this step: `tools\start_services.ps1` builds this environment
+itself when the folder is missing, using the same two commands. Doing it by hand
+is only for when the launcher's interpreter is not the one you want.
+
+### 3. The song service — `song_service\.venv`
+
+This one is deliberately manual. It installs a CUDA build of torch and about
+10 GB of weights, so the launcher does not guess: it prints *"run
+song_service\install.py first (it installs the CUDA torch)"* and starts nothing.
+And `install.py` installs into whatever interpreter runs it — it does **not**
+create the venv, so the venv has to exist first:
+
+```
+uv venv song_service\.venv --python 3.11 --seed
+song_service\.venv\Scripts\python song_service\install.py --check    # what is present, changes nothing
+song_service\.venv\Scripts\python song_service\install.py            # packages, then both models
+```
+
+The path matters: `install.py` lives in `song_service\`, so from the repository
+root it needs the `song_service\` prefix. Written without it — the way this README
+first had it — Python answers *"can't open file '…\scrape\install.py'"*.
+
+Checks, after it finishes:
+
+```
+song_service\.venv\Scripts\python install.py --check     # every package and both weight folders
+song_service\.venv\Scripts\python gpu_check.py           # torch sees the card
+```
+
+`install.py` also takes `--packages` (code only) and `--weights` (models only)
+when only one half is missing. The weights land in `song_service/models/`, which
+is gitignored.
+
+### 4. Everything at once
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\start_services.ps1
+```
+
+What success looks like:
+
+| Check | Expected |
+| --- | --- |
+| <http://127.0.0.1:5001/> | the page |
+| <http://127.0.0.1:8080/health> | `{"active_jobs":0,"ok":true,"max_height":720,…}` |
+| <http://127.0.0.1:8090/health> | `"device":"cuda"`, and `"loaded":true` after about 51 s |
+| `curl https://<worker>/api/song/endpoint` | the tunnel address the launcher just published |
+| `build\launcher_trace.txt` | a line with the time of this run |
+
+The launcher also fetches `cloudflared` if it is missing (pinned and signature
+checked). What it cannot supply is `build\song_endpoint.key`: without that the
+tunnel runs but the site is never told the address, so a phone still reports the
+AI as off. Copy the file across, or set `SONG_ENDPOINT_KEY` on the Worker to a new
+value and write the same value into the file.
+
+Each service can also be run on its own, from its own folder, with the
+interpreter of its own environment:
+
+```
+.venv\Scripts\python app.py                                  # the site, port 5001
+downloader_service\.venv\Scripts\python app.py               # downloader, port 8080
+song_service\.venv\Scripts\python app.py                     # the model, port 8090
+```
+
+The downloader needs no torch — `downloader_service\requirements.txt` is Flask,
+`yt-dlp`, `curl_cffi`, `imageio-ffmpeg` (a bundled ffmpeg) and `requests` — which
+is why it starts in seconds where the song service takes a minute and 10 GB.
 
 ### Do not copy a venv between machines
 

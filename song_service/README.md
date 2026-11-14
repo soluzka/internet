@@ -60,12 +60,18 @@ it.
 
 ```
 uv venv song_service\.venv --python 3.11 --seed                # once, on a new machine
-song_service\.venv\Scripts\python.exe install.py            # packages + both models
-song_service\.venv\Scripts\python.exe install.py --packages   # code only
-song_service\.venv\Scripts\python.exe install.py --weights    # models only
-song_service\.venv\Scripts\python.exe install.py --check      # report, change nothing
-song_service\.venv\Scripts\python.exe gpu_check.py            # confirms CUDA
+song_service\.venv\Scripts\python.exe song_service\install.py            # packages + both models
+song_service\.venv\Scripts\python.exe song_service\install.py --packages   # code only
+song_service\.venv\Scripts\python.exe song_service\install.py --weights    # models only
+song_service\.venv\Scripts\python.exe song_service\install.py --check      # report, change nothing
+song_service\.venv\Scripts\python.exe song_service\gpu_check.py            # confirms CUDA
 ```
+
+These are written from the repository root, which is why every script carries the
+`song_service\` prefix; run from inside this folder instead and the same commands
+work without it. `--check` on the machine here reports torch `2.14.1+cu126`,
+transformers `4.57.6`, both weight folders and *"Everything the service needs is
+installed."*
 
 `--check` is the quick answer to "is everything there?": it names each package,
 each weight folder, and the installed torch/transformers versions, and exits

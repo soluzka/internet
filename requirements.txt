@@ -4,9 +4,12 @@
 # broken global interpreter makes PyInstaller freeze empty packages (this is
 # what produces "cannot import name 'emit' from 'flask_socketio'").
 #
-#   python -m venv .venv
+#   uv venv .venv --python 3.11 --seed
 #   .venv\Scripts\python -m pip install -r requirements.txt
 #   .venv\Scripts\python -m PyInstaller --clean --noconfirm ai_engine.spec
+#
+# uv rather than "python -m venv": on Windows "python" is often the Microsoft
+# Store stub, and uv needs --seed or the new environment has no pip.
 #
 # Verify the socket stack before building:
 #   .venv\Scripts\python -c "from flask_socketio import emit, SocketIO"
