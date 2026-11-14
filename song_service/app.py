@@ -435,6 +435,38 @@ def _run_job(token, prompt, lyrics, seconds, steps, seed):
              elapsed=round(time.time() - started, 1))
 
 
+@app.route('/api/top', methods=['POST', 'OPTIONS'])
+def api_top_proxy():
+    """The most-watched listing, carried by the one address the internet can reach.
+
+    yt-dlp has to run on this PC - YouTube refuses a datacentre address - and the
+    downloader that runs it stays on loopback, where a phone cannot follow. This
+    service already has the tunnel, so it hands the request over on loopback and
+    returns the answer unchanged. Without it the Top 100 button has no route at
+    all from another device.
+    """
+    if request.method == 'OPTIONS':
+        return ('', 204)
+
+    import urllib.error
+    import urllib.request
+
+    body = request.get_data() or b'{}'
+    upstream = urllib.request.Request(
+        'http://127.0.0.1:8080/api/top', data=body,
+        headers={'Content-Type': 'application/json'}, method='POST')
+    try:
+        with urllib.request.urlopen(upstream, timeout=180) as answer:
+            payload = answer.read()
+            status = answer.status
+    except urllib.error.HTTPError as exc:
+        payload = exc.read()
+        status = exc.code
+    except Exception as exc:  # noqa: BLE001 - the downloader being down is normal
+        return jsonify({'error': 'The downloader on this PC is not answering: %s' % exc}), 503
+    return app.response_class(payload, status=status, mimetype='application/json')
+
+
 @app.route('/api/lyrics', methods=['POST', 'OPTIONS'])
 def api_lyrics():
     """Write lyrics for the page with the local language model."""

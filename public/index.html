@@ -1540,14 +1540,30 @@
             aiStatus.innerHTML = '<div class="ai-thinking"><div class="ai-dot"></div>Reading the most-watched videos...</div>';
 
             try {
-                const response = await fetchBounded('http://127.0.0.1:8080/api/top', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(isPlaylist ? { url: query, limit: 100 }
-                                                    : { query: query, limit: 100 }),
-                }, 90000);
-                const doc = await response.json().catch(() => null);
-                if (!response.ok || !doc || !Array.isArray(doc.videos) || !doc.videos.length) {
+                // The downloader runs on this PC's loopback, which is the phone
+                // itself from a phone. The tunnel carries the same route through
+                // the model service, so the second address is the one that works
+                // away from home; loopback stays first because it is faster here.
+                const bases = ['http://127.0.0.1:8080'];
+                if (window.remoteSongApi) bases.push(window.remoteSongApi);
+                const wanted = isPlaylist ? { url: query, limit: 100 } : { query: query, limit: 100 };
+                let doc = null;
+                for (const base of bases) {
+                    try {
+                        const response = await fetchBounded(base + '/api/top', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(wanted),
+                        }, 90000);
+                        const parsed = await response.json().catch(() => null);
+                        if (parsed && parsed.error) { doc = parsed; continue; }
+                        if (response.ok && parsed && Array.isArray(parsed.videos) && parsed.videos.length) {
+                            doc = parsed;
+                            break;
+                        }
+                    } catch (err) {}
+                }
+                if (!doc || !Array.isArray(doc.videos) || !doc.videos.length) {
                     aiStatus.innerHTML = '';
                     showToast('error', 'No list came back',
                         (doc && doc.error) || 'The YouTube listing is not answering right now.');
