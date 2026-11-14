@@ -1,0 +1,11 @@
+# The page and config.js change with every deploy, and a device holding either
+# looks like a site where the fix never landed. The edge answered
+# CF-Cache-Status: HIT for these, and changing headers inside worker.js has no
+# effect: Workers serve static assets from the edge before the Worker runs.
+# This file is read by the assets layer itself, which is where the decision is
+# made.
+/
+  Cache-Control: no-store
+
+/config.js
+  Cache-Control: no-store
