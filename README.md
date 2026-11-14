@@ -294,8 +294,16 @@ the local services.
 > A config.yml in `~/.cloudflared` disables Quick Tunnels: its ingress rules win
 > over `--url` and the catch-all answers **404**, so nothing reaches the service.
 > The launcher therefore runs cloudflared with `--config tools/bin/quick-tunnel.yml`,
-> an empty config that keeps the tunnel bound to port 8090. `cloudflared.exe`
-> itself is downloaded into `tools/bin/` and gitignored (55 MB).
+> an empty config that keeps the tunnel bound to port 8090.
+
+`cloudflared.exe` is gitignored (53 MB), so a fresh clone has none. The launcher
+fetches it once on first run, at a pinned version
+(`$cloudflaredVersion = '2026.10.7'`), into a `.download` file first: Windows'
+signature check must report **Valid** *and* name Cloudflare, or the file is
+discarded and the tunnel is skipped with a line saying so. Nothing unpinned is
+ever executed, and `latest` is deliberately not used. On 14 Nov 2026 the fetch
+took 28 seconds from a clone with no binary at all, then the tunnel started and
+published its address.
 
 ### Starting the AI from the site
 
@@ -645,7 +653,13 @@ rather than turned into a query.
   card. `ACE_STEPS` trades quality for time, `ACE_MAX_SECONDS` for length.
 - **The tunnel answers 404 with no body** — cloudflared picked up
   `~/.cloudflared/config.yml`. Run the tunnel with
-  `--config tools\bin\quick-tunnel.yml` as `start.ps1` does.
+  `--config tools\bin\quick-tunnel.yml`, which the launcher already does.
+- **"tunnel: could not fetch cloudflared"** — the first run needs GitHub
+  reachable to download the 53 MB binary. It is retried on every launcher run;
+  put `cloudflared.exe` in `tools\bin\` by hand if the machine is offline.
+- **"tunnel: the download failed its signature check"** — something answered for
+  GitHub that is not the signed release. The partial file is deleted; check the
+  network or proxy rather than editing the check away.
 
 `vercel.json` is a leftover deployment target that routes everything to
 `app.py`; the Cloudflare Worker is the supported static deployment.

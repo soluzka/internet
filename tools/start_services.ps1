@@ -209,9 +209,45 @@ $cloudflared = Join-Path $root 'tools\bin\cloudflared.exe'
 $tunnelLog = Join-Path $root 'tunnel.log'
 $siteUrl = 'https://browser.bpiersing.workers.dev'
 
+# A fresh clone has no cloudflared.exe: it is a 55 MB binary and gitignored, so
+# "clone, run, the phone works" used to need a manual download first. Fetch it
+# once, at a pinned version, and only run it if Windows calls the signature valid
+# and names Cloudflare - a download straight into an executed path is not
+# something to do on trust. "latest" is deliberately not used: that is a moving
+# target nobody reviewing this script can check.
+$cloudflaredVersion = '2026.10.7'
+$cloudflaredUrl = "https://github.com/cloudflare/cloudflared/releases/download/$cloudflaredVersion/cloudflared-windows-amd64.exe"
+
+function Get-Cloudflared([string]$target) {
+    $partial = "$target.download"
+    try {
+        Say "tunnel: cloudflared is missing, fetching $cloudflaredVersion (~55 MB, once)"
+        # Progress off: this runs under a hidden window at logon, and the progress
+        # bar makes Invoke-WebRequest several times slower for no benefit.
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $cloudflaredUrl -OutFile $partial -UseBasicParsing -TimeoutSec 300
+
+        $signature = Get-AuthenticodeSignature -FilePath $partial
+        $signer = if ($signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { '' }
+        if ($signature.Status -ne 'Valid' -or $signer -notmatch 'Cloudflare') {
+            Say "tunnel: the download failed its signature check (status $($signature.Status)), so it was discarded"
+            Remove-Item $partial -ErrorAction SilentlyContinue
+            return $false
+        }
+
+        Move-Item -Path $partial -Destination $target -Force
+        Say "tunnel: cloudflared $cloudflaredVersion in place"
+        return $true
+    } catch {
+        Say "tunnel: could not fetch cloudflared ($($_.Exception.Message)); the model stays on this network"
+        Remove-Item $partial -ErrorAction SilentlyContinue
+        return $false
+    }
+}
+
 if ($NoTunnel) {
     Say 'tunnel: skipped (-NoTunnel)'
-} elseif (-not (Test-Path $cloudflared)) {
+} elseif (-not (Test-Path $cloudflared) -and -not (Get-Cloudflared $cloudflared)) {
     Say 'tunnel: cloudflared is missing, so the model stays on this network'
 } else {
     $live = @(Get-Process cloudflared -ErrorAction SilentlyContinue |
