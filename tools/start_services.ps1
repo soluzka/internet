@@ -98,6 +98,14 @@ function Answers([int]$port, [string]$path = '/health') {
 # during exactly the window a second click lands in, and the second click used
 # to start a second copy that then failed to bind 8090. Asking whether the
 # process exists covers that window: one launcher run, one service.
+#
+# The marker has to be an argument, not a path. A venv's python.exe re-execs the
+# interpreter named in its pyvenv.cfg, so the process that ends up owning the
+# port reports the base uv python on its command line - no "song_service" and no
+# ".venv" in it at all. Matching the folder therefore found nothing, every click
+# started another copy, and each new copy spent forty seconds importing torch
+# before failing to bind. "--role song" survives the re-exec and cannot be
+# confused with the other two, which are all also called app.py.
 function Starting([string]$marker) {
     $found = Get-CimInstance Win32_Process -Filter "Name like '%python%'" -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -like "*$marker*" }
@@ -111,7 +119,7 @@ function Starting([string]$marker) {
 # --- downloader ----------------------------------------------------------
 if (Answers $DownloadPort) {
     Say "downloader already on 127.0.0.1:$DownloadPort"
-} elseif (Starting '*downloader_service*') {
+    } elseif (Starting '*--role downloader*') {
     Say 'downloader is still starting, leaving it alone'
 } else {
     $service = Join-Path $root 'downloader_service'
@@ -122,7 +130,7 @@ if (Answers $DownloadPort) {
         & $python -m pip install -q --disable-pip-version-check -r (Join-Path $service 'requirements.txt')
     }
     $env:PORT = "$DownloadPort"
-    Start-Process -FilePath $python -ArgumentList 'app.py' -WorkingDirectory $service `
+    Start-Process -FilePath $python -ArgumentList 'app.py', '--role', 'downloader' -WorkingDirectory $service `
         -WindowStyle Hidden `
         -RedirectStandardOutput (Join-Path $root 'build\downloader_out.log') `
         -RedirectStandardError (Join-Path $root 'build\downloader_err.log') | Out-Null
@@ -132,7 +140,7 @@ if (Answers $DownloadPort) {
 # --- song service, on CUDA ----------------------------------------------
 if (Answers $SongPort) {
     Say "song service already on 127.0.0.1:$SongPort"
-} elseif (Starting '*song_service*') {
+    } elseif (Starting '*--role song*') {
     Say 'song service is still starting (torch import takes about 40 s), leaving it alone'
 } else {
     $service = Join-Path $root 'song_service'
@@ -147,7 +155,7 @@ if (Answers $SongPort) {
     # when torch can see a card and cpu when it cannot.
     $env:SONG_PORT = "$SongPort"
     $env:SONG_WARM = if ($NoWarm) { '0' } else { '1' }
-    Start-Process -FilePath $python -ArgumentList 'app.py' -WorkingDirectory $service `
+    Start-Process -FilePath $python -ArgumentList 'app.py', '--role', 'song' -WorkingDirectory $service `
         -WindowStyle Hidden `
         -RedirectStandardOutput (Join-Path $service 'logs\service_out.log') `
         -RedirectStandardError (Join-Path $service 'logs\service_err.log') | Out-Null
@@ -160,7 +168,7 @@ if (Answers $SongPort) {
 # The marker is this root's venv python: every service is called app.py, so the
 # name alone would match all three.
 $sitePython = Join-Path $root '.venv\Scripts\python.exe'
-$siteMarker = "*$($root)\.venv\Scripts\python.exe*"
+$siteMarker = '*--role site*'
 
 if (Answers $WebPort '/') {
     Say "site already on 127.0.0.1:$WebPort"
@@ -170,7 +178,7 @@ if (Answers $WebPort '/') {
     Say "site: $sitePython is missing (create it with python -m venv .venv)"
 } else {
     $env:PORT = "$WebPort"
-    Start-Process -FilePath $sitePython -ArgumentList 'app.py' -WorkingDirectory $root `
+    Start-Process -FilePath $sitePython -ArgumentList 'app.py', '--role', 'site' -WorkingDirectory $root `
         -WindowStyle Hidden `
         -RedirectStandardOutput (Join-Path $root 'run_web.log') `
         -RedirectStandardError (Join-Path $root 'run_web.err') | Out-Null
@@ -207,8 +215,8 @@ if ($Watch) {
         # it is left alone; only a port with no process behind it is restarted.
         $down = @()
         if (-not (Answers $WebPort '/') -and -not (Starting $siteMarker)) { $down += 'site' }
-        if (-not (Answers $DownloadPort) -and -not (Starting '*downloader_service*')) { $down += 'downloader' }
-        if (-not (Answers $SongPort) -and -not (Starting '*song_service*')) { $down += 'song service' }
+        if (-not (Answers $DownloadPort) -and -not (Starting '*--role downloader*')) { $down += 'downloader' }
+        if (-not (Answers $SongPort) -and -not (Starting '*--role song*')) { $down += 'song service' }
 
         if ($down.Count -gt 0) {
             $which = $down -join ' and '
