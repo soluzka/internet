@@ -6,9 +6,10 @@ and hands the file back, so the deployed page offers real downloads instead of
 only opening the source page.
 
 It is deliberately separate from the desktop app: no ML, no scraping, no voice
-recognition, its own short dependency list. The page tries ports in order — the
-desktop app on **5001**, then this service on **8080** — and remembers the one
-that answered, so it works whether or not the app is running.
+recognition, its own short dependency list. This service is what the page asks
+first (**8080**); the desktop app on 5001 is only a fallback, and `config.js`
+points at 5001 on the deployed build, which the page recognises as the closed app
+and skips. Whichever answers is remembered for the rest of the session.
 
 ## API
 
@@ -16,8 +17,17 @@ that answered, so it works whether or not the app is running.
 POST /api/download          {"url": "https://..."}  -> 202 {"token": "...", "status": "queued"}
 GET  /api/download/<token>                          -> {"status": "queued|downloading|processing|complete|error", "percent": 42.1, ...}
 GET  /download_file/<token>                         -> the video file, then the job is deleted
+POST /api/top               {"query" | "url", "limit"}  -> the most-watched listing, or a playlist
+POST /api/discover          {"query": "..."}        -> search results, no media fetched
+POST /api/resolve           {"url": "..."}          -> metadata without downloading
+GET  /api/play?url=...                              -> the video itself, cached briefly (what the player uses)
 GET  /health                                        -> {"ok": true, "max_height": 720, "cookies": false, "active_jobs": 0}
 ```
+
+`/api/play` exists because neither TikTok's signed file URL nor Dailymotion's HLS
+playlist can be fetched by the page: one is refused by the opaque-response guard,
+the other has no CORS headers. Here yt-dlp downloads it once and this service
+serves the file, with `Range` support so the player can seek.
 
 `/health` reports whether a cookie jar is loaded and how many jobs are active,
 which is the quickest way to tell a bot-check refusal from a broken service.
@@ -59,6 +69,17 @@ pause waits a few seconds while the container wakes.
   string raises an empty `AssertionError`.
 - `YT_COOKIES` takes the whole cookie jar as text, for hosts that only offer
   environment variables rather than a file mount. Neither form is committed.
+
+## Reaching it from a phone
+
+Nothing here has to be deployed for a phone to use it. The tunnel the launcher
+starts points at the song service, which forwards to this one on loopback:
+`/api/top` for the Top 100 button and `/pc/<path>` for `api/play`, progress and
+`download_file`. That is what makes a Dailymotion or TikTok card play on a phone,
+where `127.0.0.1:8080` would mean the phone itself.
+
+Deploying it on Render is still the right answer for a page used by people who do
+not have your PC — just note the cloud-IP limits below.
 
 ## Run locally
 

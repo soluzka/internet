@@ -13,8 +13,15 @@ The page calls `http://127.0.0.1:8090` for both halves of a song: the lyric mode
 first, then ACE-Step for the sung audio. That works from the deployed https page,
 not just from localhost, because the service answers the browser's private
 network preflight with `Access-Control-Allow-Private-Network`. When the service
-is not running the page falls back to the sampled band in `public/index.html` —
-instruments only, no voice.
+is not running the page waits up to three minutes for it to come up (a boot takes
+about a minute) and only then falls back to the sampled band in
+`public/index.html` — instruments only, no voice.
+
+On a phone or another computer `127.0.0.1` is that device, so the page uses the
+tunnel instead: the launcher starts `cloudflared`, publishes its address to the
+site, and the page reads it on load. This service is what the tunnel points at,
+which is why it also forwards the downloader's routes — see `/api/top` and `/pc`
+below.
 
 ## ACE-Step is the music model
 
@@ -82,21 +89,37 @@ song_service\.venv\Scripts\python.exe song_service\app.py
 Listens on `127.0.0.1:8090`:
 
 ```
-GET  /health                                        -> device, card, vram, loaded
+GET  /health                                        -> device, card, loaded, warm clock
 POST /api/lyrics {genre, subject, seed, ...}        -> {sections, lines, model}
 POST /api/song   {prompt, lyrics, seconds, steps}   -> 202 {token}
 GET  /api/song/<token>                              -> {status, progress, error}
 GET  /api/song/latest                               -> the newest job, or {status: idle}
 GET  /song_file/<token>                             -> the wav
 GET  /last_song                                     -> the last render, after a restart
+POST /api/top    {query | url, limit}                -> forwarded to the downloader on 8080
+ANY  /pc/<path>                                      -> forwarded to the downloader on 8080
 ```
+
+The last two exist because this service owns the tunnel. yt-dlp has to run on
+this machine, so `Top 100` and the video player cannot be served from the edge;
+the tunnel carries them here and these routes hand them to the downloader on
+loopback. `/pc` forwards the method, body, `Range` and content headers, so a
+video streams and seeks exactly as it does locally.
 
 `/health` is the honest answer to "is it on the GPU":
 
 ```json
 {"ok": true, "device": "cuda", "gpu": "NVIDIA GeForce RTX 4060 Ti",
- "vram_gb": 8.0, "loaded": true, "lyrics_loaded": true, "cpu_offload": true}
+ "vram_gb": 8.0, "loaded": true, "lyrics_loaded": true, "cpu_offload": true,
+ "warming": false, "warming_seconds": null, "warm_failed": null}
 ```
+
+`loaded` is what matters, and `warming` / `warming_seconds` are why the badge need
+not guess: with `SONG_WARM=1` the service answers within seconds while the weights
+are still going onto the card, and it reports how long that has been running so
+the page can say `CUDA · warming 1m 35s`. Measured here: **51 seconds** to
+`loaded: true` with nothing competing. `warm_failed` carries the reason if the
+load raised.
 
 8 GB of VRAM is tight for a 3.5B model, so `ACE_CPU_OFFLOAD=1` is the default: it
 pages weights in and out instead of running out of memory, at some cost in speed.
@@ -116,6 +139,12 @@ machine whose card cannot be used at all.
 pay for the load. The launcher sets it; on its own the service answers health
 immediately and loads on first use.
 
+One launcher starts this service: `tools\start_services.ps1`, which the logon
+entry, `songsvc://` and `start.cmd` all run. It starts the process at
+`AboveNormal` priority on purpose — the minute after a boot is a race between
+torch importing, these weights paging in and the site fitting its own models over
+12 000 videos, and the warm loses that race at normal priority.
+
 ### Reaching this from the deployed page
 
 Mixed content is not the obstacle it looks like: browsers treat loopback as
@@ -125,5 +154,5 @@ an `after_request` hook with `Access-Control-Allow-Private-Network: true`, plus
 the usual `Access-Control-Allow-Origin` and a 204 for the JSON preflight.
 
 That is why the deployed page can render songs with no tunnel at all. The tunnel
-in `start.ps1` is only for reaching the model from a *different* device, where
-`127.0.0.1` means the phone rather than this machine.
+the launcher starts is only for reaching the model from a *different* device,
+where `127.0.0.1` means the phone rather than this machine.
