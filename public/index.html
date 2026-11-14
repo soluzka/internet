@@ -3503,18 +3503,29 @@
                 }
                 return;
             }
-            if (wakeBtn && wakeBtn.dataset.state !== 'starting') {
-                wakeBtn.textContent = 'AI ready';
-                wakeBtn.dataset.state = 'ready';
-            }
             const onCuda = String(info.device || '').toLowerCase() === 'cuda';
-            chip.dataset.state = onCuda ? 'live' : 'retrying';
+            // Answering is not the same as being ready. Right after a restart the
+            // service replies within seconds while ACE-Step is still being loaded
+            // onto the card, and calling that "AI ready" is what made a restart
+            // look broken: the badge was green and a song still waited minutes.
+            const loaded = info.loaded === true;
+            chip.dataset.state = onCuda && loaded ? 'live' : 'retrying';
             text.textContent = onCuda
-                ? 'CUDA · ' + String(info.gpu || 'GPU').replace(/^NVIDIA\s+/i, '')
+                ? (loaded ? 'CUDA · ' + String(info.gpu || 'GPU').replace(/^NVIDIA\s+/i, '')
+                          : 'CUDA · warming up')
                 : 'CPU only';
-            chip.title = onCuda
-                ? `${info.gpu}, ${info.vram_gb} GB - ${info.loaded ? 'model loaded and ready' : 'model loads on the first song'}`
-                : 'Torch cannot see a CUDA device, so songs and lyrics will be very slow.';
+            chip.title = !onCuda
+                ? 'Torch cannot see a CUDA device, so songs and lyrics will be very slow.'
+                : loaded
+                    ? `${info.gpu}, ${info.vram_gb} GB - model loaded and ready`
+                    : `${info.gpu} - the model is still loading onto the card; a song waits for it to finish`;
+            if (wakeBtn && wakeBtn.dataset.state !== 'starting') {
+                wakeBtn.textContent = loaded ? 'AI ready' : 'AI warming…';
+                wakeBtn.dataset.state = loaded ? 'ready' : 'starting';
+                wakeBtn.title = loaded
+                    ? 'The AI is running and the model is on the card.'
+                    : 'The service is up and the model is still loading; songs start when it is ready.';
+            }
         }
 
         // The AI belongs to this PC. From this PC's own browser it is reached on
@@ -3546,10 +3557,11 @@
             const onThisPc = await modelAnswers('http://127.0.0.1:8090');
             const overTunnel = onThisPc ? false : await modelAnswers(window.remoteSongApi);
             if (onThisPc || overTunnel) {
+                // refreshGpu owns the wording and the button: warming until the
+                // model is on the card, ready after that. Saying "ready" here just
+                // because the service answers was the lie this fixes.
+                if (btn) btn.dataset.state = '';
                 await refreshGpu();
-                label('AI ready', 'ready', onThisPc
-                    ? 'The AI is running on this PC.'
-                    : 'The AI is running on your PC and answering through the tunnel.');
                 return;
             }
 
