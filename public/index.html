@@ -4900,20 +4900,39 @@
         const DOWNLOAD_SERVICE = 'http://127.0.0.1:8080';
         let downloadOrigin = null;
 
-        function downloadCandidates() {
+        async function downloadCandidates() {
             const list = [];
             const configured = (window.DOWNLOAD_API || '').replace(/\/+$/, '');
             // The downloader service comes first: it is small, it stays running,
             // and it is where config.js points anyway. The heavy app used to be
             // asked first and, being closed, cost a refused connection before
             // every download that 8080 could have served straight away.
+            //
+            // 127.0.0.1 is only this PC. A phone on the same wifi reaches the
+            // downloader at this page's own host on 8080 instead, which is why that
+            // address is added whenever the page is served from a LAN address.
+            const servedLocally = /^(127\.|localhost$|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(location.hostname);
+            if (servedLocally) list.push('http://' + location.hostname + ':8080');
             if (!list.includes(DOWNLOAD_SERVICE)) list.push(DOWNLOAD_SERVICE);
             if (configured && configured !== DOWNLOAD_SERVICE && configured !== LOCAL_APP) list.push(configured);
-            // On a phone the two above are the phone itself, so the download never
-            // reached the PC: the card went quiet and the site said nothing had been
-            // downloaded. The tunnel carries the downloader under /pc, which is the
-            // same route the player and Top 100 already use.
-            const tunnel = String(window.remoteSongApi || '').replace(/\/+$/, '');
+            // A phone on mobile data has neither of those: the tunnel carries the
+            // downloader under /pc, the same route the player and Top 100 use. It
+            // is looked up here rather than trusted to have arrived already, because
+            // a download pressed before that lookup finished used to fail with
+            // "nothing answered".
+            let tunnel = String(window.remoteSongApi || '').replace(/\/+$/, '');
+            if (!tunnel) {
+                try {
+                    const response = await fetchBounded('/api/song/endpoint', { cache: 'no-store' }, 6000);
+                    if (response.ok) {
+                        const found = await response.json();
+                        if (found && found.url) {
+                            tunnel = String(found.url).replace(/\/+$/, '');
+                            window.remoteSongApi = tunnel;
+                        }
+                    }
+                } catch (err) {}
+            }
             if (tunnel && !list.includes(tunnel + '/pc')) list.push(tunnel + '/pc');
             return list;
         }
@@ -4963,7 +4982,8 @@
 
                 (async () => {
                     let lastError = null;
-                    for (const origin of downloadCandidates()) {
+                    const tried = await downloadCandidates();
+                    for (const origin of tried) {
                         try {
                             const data = await askOne(origin);
                             downloadOrigin = origin;
@@ -5010,10 +5030,13 @@
                     // Nothing answered, so nothing was downloaded. Say that and
                     // offer the video page as a choice; opening it unasked looked
                     // like the site had wandered off on its own.
+                    // Name what was tried: "nothing answered" cannot be acted on,
+                    // and the addresses are the difference between "the PC is down"
+                    // and "this page has the wrong address".
                     showToast('info', 'Not downloaded',
-                        'Nothing on this computer answered the download: neither the desktop app nor the ' +
-                        'downloader service. Start one of them and try again.', {
-                        autoClose: 12000,
+                        'Nothing answered the download. Tried: ' + tried.join(', ') +
+                        '. On a phone this means the tunnel is down or stale; run the launcher on the PC.', {
+                        autoClose: 15000,
                         action: { href: url, label: 'Open the video page' }
                     });
                 });
@@ -5112,12 +5135,23 @@
                 delete window._activeDownloads[data.url];
             }
             if (data.token) {
-                const iframe = document.createElement('iframe');
-                iframe.style.display = 'none';
-                iframe.src = downloadUrl('/download_file/' + data.token);
-                document.body.appendChild(iframe);
-                setTimeout(() => document.body.removeChild(iframe), 60000);
-                showToast('success', 'Download complete', data.title || 'Video saved', { autoClose: 5000 });
+                // A link with download, opened in its own tab, rather than a hidden
+                // iframe: an iframe that receives Content-Disposition: attachment is
+                // ignored by several phone browsers, so the file was fetched and
+                // thrown away. A new tab keeps this page where it is either way.
+                const href = downloadUrl('/download_file/' + data.token);
+                const link = document.createElement('a');
+                link.href = href;
+                link.download = (data.title || 'video') + '.mp4';
+                link.target = '_blank';
+                link.rel = 'noopener';
+                document.body.appendChild(link);
+                link.click();
+                setTimeout(() => link.remove(), 30000);
+                showToast('success', 'Download complete', data.title || 'Video saved', {
+                    autoClose: 8000,
+                    action: { href: href, label: 'Save again' }
+                });
             }
         }
 
