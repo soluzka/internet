@@ -3424,7 +3424,10 @@
             for (const base of bases) {
                 if (!base) continue;
                 try {
-                    const response = await fetchBounded(base + '/health', {}, 4000);
+                    // Four seconds was too short right after a boot: the service
+                    // is still importing torch and counting it as absent is what
+                    // left the badge on "AI off" until the page was reloaded.
+                    const response = await fetchBounded(base + '/health', {}, 8000);
                     if (response.ok) { info = await response.json(); break; }
                 } catch (err) {}
             }
@@ -5386,6 +5389,20 @@
         // again whenever Start the AI reports ready, and it stays honest when the
         // service is not running: AI off, rather than a stale card name.
         refreshGpu();
+
+        // One check at load is not enough: after a reboot the song service needs
+        // about forty seconds before it answers, and a page opened in that window
+        // used to sit on "AI off" until someone refreshed it. So the badge keeps
+        // asking - every five seconds while it is off, every thirty once it is up,
+        // which also notices a service that has since died.
+        (async function watchGpu() {
+            const chip = document.getElementById('gpuChip');
+            const offline = !chip || chip.dataset.state === 'offline';
+            setTimeout(async () => {
+                await refreshGpu();
+                watchGpu();
+            }, offline ? 5000 : 30000);
+        })();
     </script>
 </body>
 </html>
