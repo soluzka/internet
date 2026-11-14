@@ -613,6 +613,49 @@ rather than turned into a query.
 | `/api/song/endpoint` | Worker | The tunnel address the PC last published; `GET` is public, `POST` needs `x-song-key` |
 | `/pc/<path>` | song service | Forwards to the downloader on 8080, so a phone can use Top 100, the player and downloads |
 
+## Setting up on another PC
+
+Three Python environments, not one, and they differ in who creates them. Nothing
+here travels in a clone: every `.venv` is gitignored, as are the models.
+
+| Environment | Who creates it | Command |
+| --- | --- | --- |
+| `downloader_service\.venv` | **the launcher, by itself** | none — it runs `python -m venv` and installs `downloader_service\requirements.txt` the first time |
+| `.venv` (root, the site) | **you** | `python -m venv .venv` then `.venv\Scripts\python -m pip install -r requirements.txt` |
+| `song_service\.venv` | **you**, before `install.py` | `python -m venv song_service\.venv` then `song_service\.venv\Scripts\python install.py` |
+
+The song service is the awkward one: `install.py` installs the CUDA torch wheel
+and the 10 GB of weights, but it does not create the venv it runs in, and the
+launcher refuses to invent one — it says *"run song_service\install.py first (it
+installs the CUDA torch)"* instead of starting a CPU-only service that would take
+minutes per song.
+
+So a fresh machine is:
+
+```
+python -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.txt
+python -m venv song_service\.venv
+song_service\.venv\Scripts\python install.py          # packages, then ~10 GB of weights
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\start_services.ps1
+```
+
+The launcher then handles the downloader's venv, and fetches `cloudflared` if it
+is missing. What it cannot supply is `build\song_endpoint.key`: without it the
+tunnel runs but the site is never told the address, so a phone still reports the
+AI as off. Copy that file across, or set `SONG_ENDPOINT_KEY` on the Worker to a
+new value and write the same value into the file.
+
+### Do not copy a venv between machines
+
+A venv is not portable: `pyvenv.cfg` holds an absolute `home` path to the
+interpreter that built it, and every script in `Scripts\` is a stub ending in that
+path too. This repository has already been bitten once — when the Windows profile
+here changed from `bpier` to `soluzka_3eenj0v`, all three venvs still pointed at
+`C:\Users\bpier\AppData\…\Python311`, which no longer existed, and every service
+failed to start until those paths were repointed. Recreate the environments on the
+new machine rather than copying the folder.
+
 ## Troubleshooting
 
 - **"database is locked"** — the connections use WAL and a 30 s busy timeout;

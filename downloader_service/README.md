@@ -89,10 +89,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\start_services.ps1
 
 That starts this service on 8080 and the song service on 8090, skipping whichever
 is already answering — safe to run twice, and it is what the logon entry runs.
-By hand:
+
+The launcher also creates `.venv` inside this folder on first use, from
+`requirements.txt`, so this service needs no setup step of its own. By hand, once
+that environment exists:
 
 ```
-.venv\Scripts\python.exe downloader_service\app.py
+downloader_service\.venv\Scripts\python.exe app.py
 ```
 
 Listens on `PORT` (default 8080) with Flask's dev server. The container uses

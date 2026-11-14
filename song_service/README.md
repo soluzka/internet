@@ -50,7 +50,11 @@ and no manual cloning or pip archaeology. The file holds two lists:
 | `ACE-Step/ACE-Step-v1-3.5B` — music, sings the lyrics | ≈7 GB | Apache-2.0 |
 | `Qwen/Qwen2.5-1.5B-Instruct` — writes the lyrics | ≈3.1 GB | Apache-2.0 |
 
+The commands below assume `song_service\.venv` exists; create it first, because
+`install.py` installs into whatever interpreter runs it and does not build its own:
+
 ```
+python -m venv song_service\.venv                              # once, on a new machine
 song_service\.venv\Scripts\python.exe install.py            # packages + both models
 song_service\.venv\Scripts\python.exe install.py --packages   # code only
 song_service\.venv\Scripts\python.exe install.py --weights    # models only
@@ -63,6 +67,12 @@ each weight folder, and the installed torch/transformers versions, and exits
 non-zero if anything is missing. Both models are fetched from Hugging Face into
 `song_service/models/`, which is gitignored — they are package downloads, not
 repository content.
+
+Neither the venv nor the models should ever be copied between machines: the venv's
+`pyvenv.cfg` holds an absolute path to the interpreter that built it, so a copied
+one fails with a missing python, and the weights are 10 GB. On this repo that
+happened when the Windows profile changed — all three venvs still pointed at the
+old user's Python and every service refused to start.
 
 One order matters: the lyrics model writes the words, then ACE-Step sings that
 exact text, so both are needed for a sung song.
