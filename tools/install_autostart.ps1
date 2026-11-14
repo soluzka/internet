@@ -5,8 +5,9 @@
 
       HKCU Run key 'AI song services'   launcher -Watch at every logon
       Startup folder 'AI song services.cmd'   the same thing, as a second chance
-      the -Watch process                checks both ports every 2 minutes and
-                                        starts a service that has gone away
+      the -Watch process                checks the site, the downloader, the model
+                                        and the tunnel every 2 minutes and starts
+                                        whichever has gone away
 
     No administrator is needed, so this cannot use Task Scheduler: registering a
     task, even one for the current user, returns Access denied here.
