@@ -94,7 +94,12 @@ function Trace([string]$text) {
 # The services answer /health; the site answers / with its page, so the path the
 # probe asks for is a parameter rather than assumed.
 function Answers([int]$port, [string]$path = '/health') {
-    $code = & curl.exe -s -o NUL -w '%{http_code}' --max-time 3 "http://127.0.0.1:$port$path"
+    # Twenty seconds, not three. While the model is being loaded onto the card the
+    # machine is busy enough that a three-second probe times out, and calling a
+    # healthy-but-loading service "down" is what made the watchdog start a rival
+    # copy at 21:32 on 13 Nov: the new one could not bind, the warm restarted, and
+    # the AI took another five minutes to appear.
+    $code = & curl.exe -s -o NUL -w '%{http_code}' --max-time 20 "http://127.0.0.1:$port$path"
     return ($code -eq '200')
 }
 
@@ -160,10 +165,15 @@ if (Answers $SongPort) {
     # when torch can see a card and cpu when it cannot.
     $env:SONG_PORT = "$SongPort"
     $env:SONG_WARM = if ($NoWarm) { '0' } else { '1' }
-    Start-Process -FilePath $python -ArgumentList 'app.py', '--role', 'song' -WorkingDirectory $service `
+    $songProc = Start-Process -FilePath $python -ArgumentList 'app.py', '--role', 'song' -WorkingDirectory $service `
         -WindowStyle Hidden `
         -RedirectStandardOutput (Join-Path $service 'logs\service_out.log') `
-        -RedirectStandardError (Join-Path $service 'logs\service_err.log') | Out-Null
+        -RedirectStandardError (Join-Path $service 'logs\service_err.log') -PassThru
+    # Above normal: the first five minutes after a boot are a race between torch
+    # importing, the 3.5B weights being paged onto the card and the site fitting
+    # its own models over 12 000 videos. Without this the warm is what loses that
+    # race, and the model takes several minutes longer to be usable.
+    try { $songProc.PriorityClass = 'AboveNormal' } catch { }
     Say "song service starting on 127.0.0.1:$SongPort, warming CUDA (log: song_service\logs\service_out.log)"
 }
 
@@ -262,7 +272,7 @@ if ($NoTunnel) {
     }
 }
 
-$songHealth = & curl.exe -s --max-time 4 "http://127.0.0.1:$SongPort/health"
+$songHealth = & curl.exe -s --max-time 20 "http://127.0.0.1:$SongPort/health"
 if ($songHealth) { Say "song now: $songHealth" } else { Say 'song: still loading, check again in a minute' }
 
 # --- watchdog ------------------------------------------------------------

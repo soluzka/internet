@@ -3337,6 +3337,31 @@
 
             const bases = await modelBases(false);
 
+            // A compose pressed in the minute after a restart used to give up and
+            // fall back to a song with no AI in it, because the service was still
+            // importing torch and nothing answered. Wait for the service to answer
+            // instead: the model itself can load on the first job, and the status
+            // line says what is happening rather than the song quietly changing.
+            const waitForService = async (limitMs) => {
+                const began = Date.now();
+                while (Date.now() - began < limitMs) {
+                    for (const base of bases) {
+                        try {
+                            const probe = await fetchBounded(base + '/health', { cache: 'no-store' }, 6000);
+                            if (probe.ok) return true;
+                        } catch (err) {}
+                    }
+                    const status = document.getElementById('songStatus');
+                    if (status) {
+                        status.textContent = 'Waiting for the AI service to come up on this PC... '
+                            + Math.round((Date.now() - began) / 1000) + 's';
+                    }
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                }
+                return false;
+            };
+            await waitForService(3 * 60 * 1000);
+
             let answer = null;
             window._modelNote = '';
             // A song is minutes of work on this machine, so it has to outlive the
@@ -3482,10 +3507,11 @@
             for (const base of bases) {
                 if (!base) continue;
                 try {
-                    // Four seconds was too short right after a boot: the service
-                    // is still importing torch and counting it as absent is what
-                    // left the badge on "AI off" until the page was reloaded.
-                    const response = await fetchBounded(base + '/health', {}, 8000);
+                    // Four seconds was too short right after a boot, and eight is
+                    // only just enough: the service is still importing torch, and
+                    // counting a slow answer as absent is what left the badge on
+                    // "AI off" until the page was reloaded.
+                    const response = await fetchBounded(base + '/health', {}, 12000);
                     if (response.ok) { info = await response.json(); break; }
                 } catch (err) {}
             }
@@ -5522,11 +5548,13 @@
         // which also notices a service that has since died.
         (async function watchGpu() {
             const chip = document.getElementById('gpuChip');
-            const offline = !chip || chip.dataset.state === 'offline';
+            // "retrying" means it answered but the model is still landing on the
+            // card, which is the other state worth watching closely after a boot.
+            const settling = !chip || chip.dataset.state === 'offline' || chip.dataset.state === 'retrying';
             setTimeout(async () => {
                 await refreshGpu();
                 watchGpu();
-            }, offline ? 5000 : 30000);
+            }, settling ? 5000 : 30000);
         })();
     </script>
 </body>
