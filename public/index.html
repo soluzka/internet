@@ -2530,13 +2530,22 @@
                 // The model on this machine has to wake up and write, which is
                 // tens of seconds the first time; eight seconds was abandoning a
                 // perfectly healthy request and falling back to template lines.
-                const local = base === '' || /(127\.0\.0\.1|localhost)/.test(base);
-                const wait = local ? 150000 : 8000;
+                //
+                // Only the Worker cannot render, and it says so with an instant
+                // 501. Every other address in this list is this machine's model -
+                // loopback, the published tunnel, or one pasted into the page -
+                // and is slow by nature: about four seconds warm, up to a minute
+                // after the lyric model has been swapped back in. Capping those
+                // at eight seconds is what made a phone show the GPU and then
+                // stop the moment a song was started.
+                const onOwnOrigin = base === '';
+                const looksLikeEdge = onOwnOrigin && !/^(127\.|localhost$|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(location.hostname);
+                const wait = looksLikeEdge ? 10000 : 150000;
                 let response;
                 let ticker = null;
                 try {
                     const status = document.getElementById('songStatus');
-                    if (status && local) {
+                    if (status && !looksLikeEdge) {
                         // The wait is real and it is the model loading; a counter
                         // says it is working instead of looking hung.
                         const began = Date.now();
