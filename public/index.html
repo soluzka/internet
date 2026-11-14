@@ -4909,6 +4909,12 @@
             // every download that 8080 could have served straight away.
             if (!list.includes(DOWNLOAD_SERVICE)) list.push(DOWNLOAD_SERVICE);
             if (configured && configured !== DOWNLOAD_SERVICE && configured !== LOCAL_APP) list.push(configured);
+            // On a phone the two above are the phone itself, so the download never
+            // reached the PC: the card went quiet and the site said nothing had been
+            // downloaded. The tunnel carries the downloader under /pc, which is the
+            // same route the player and Top 100 already use.
+            const tunnel = String(window.remoteSongApi || '').replace(/\/+$/, '');
+            if (tunnel && !list.includes(tunnel + '/pc')) list.push(tunnel + '/pc');
             return list;
         }
 
